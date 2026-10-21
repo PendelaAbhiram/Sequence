@@ -1,9 +1,12 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "commonjs",
-    "moduleResolution": "node",
-    "lib": ["ES2022"],
+    "module": "Node16",
+    "moduleResolution": "Node16",
+    "lib": [
+      "ES2022"
+    ],
+    "rootDir": "..",
     "outDir": "./dist",
     "strict": true,
     "esModuleInterop": true,
@@ -11,10 +14,20 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "paths": {
-      "@shared/*": ["../shared/*"],
-      "@shared": ["../shared/index"]
+      "@shared/*": [
+        "../shared/*"
+      ],
+      "@shared": [
+        "../shared/index"
+      ]
     }
   },
-  "include": ["src/**/*", "../shared/**/*"],
-  "exclude": ["node_modules", "dist"]
+  "include": [
+    "src/**/*",
+    "../shared/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist"
+  ]
 }
