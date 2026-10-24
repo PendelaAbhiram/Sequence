@@ -40,7 +40,12 @@ export const TurnBanner: React.FC<TurnBannerProps> = ({
     >
       <View style={[styles.bannerInner, { borderColor: teamColor }]}>
         <View style={[styles.chipIndicator, { backgroundColor: teamColor }]} />
-        <Text style={styles.bannerText}>
+        <Text
+          style={styles.bannerText}
+          numberOfLines={1}
+          ellipsizeMode="tail"
+          adjustsFontSizeToFit
+        >
           {isBot ? '🤖 ' : ''}
           <Text style={{ fontWeight: '900', color: '#FFFFFF' }}>{playerName}</Text>'s Turn
         </Text>
@@ -68,6 +73,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.full,
     backgroundColor: 'rgba(9, 21, 33, 0.94)',
     borderWidth: 1.5,
+    maxWidth: 320,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.5,
@@ -85,6 +91,8 @@ const styles = StyleSheet.create({
     ...typography.caption,
     fontSize: 12.5,
     color: '#E2E8F0',
+    flexShrink: 1,
+    minWidth: 0,
   },
   teamMiniBadge: {
     paddingHorizontal: 6,

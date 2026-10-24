@@ -351,39 +351,74 @@ export const useOnlineStore = create<OnlineStore>((set, get) => ({
       });
     });
 
+    socket.on('heartbeat', () => {
+      // Lightweight server heartbeat received: maintains active connection
+    });
+
     socket.on('error', (err) => {
       set({ errorMessage: err.message });
     });
 
-    // Auto-rejoin when the app returns to the foreground
-    if (!appStateSubscription && typeof AppState !== 'undefined') {
-      appStateSubscription = AppState.addEventListener('change', async (nextAppState: AppStateStatus) => {
-        if (nextAppState === 'active') {
-          const { isOnline, room } = get();
-          if (isOnline && room) {
-            const socket = connectSocket();
-            if (socket.connected) {
-              get().rejoinCurrentRoom();
-            }
-          } else if (!room) {
-            const lastCode = await storage.getItem(LAST_ACTIVE_ROOM_KEY);
-            if (lastCode) {
-              const session = await getPlayerRoomSession(lastCode);
-              if (session && session.reconnectToken) {
-                set({
-                  isOnline: true,
-                  playerId: session.playerId,
-                  reconnectToken: session.reconnectToken,
-                  playerName: session.playerName,
-                  room: { roomCode: session.roomCode } as any,
-                });
-                connectSocket();
-                get().rejoinCurrentRoom();
-              }
-            }
+    const onForegroundOrOnline = async () => {
+      const { isOnline, room, playerId, reconnectToken } = get();
+      let currentRoomCode = room?.roomCode;
+      let currentToken = reconnectToken || playerId;
+
+      if (!currentRoomCode) {
+        const lastCode = await storage.getItem(LAST_ACTIVE_ROOM_KEY);
+        if (lastCode) {
+          const session = await getPlayerRoomSession(lastCode);
+          if (session && session.reconnectToken) {
+            set({
+              isOnline: true,
+              playerId: session.playerId,
+              reconnectToken: session.reconnectToken,
+              playerName: session.playerName,
+              room: { roomCode: session.roomCode } as any,
+            });
+            currentRoomCode = session.roomCode;
+            currentToken = session.reconnectToken;
           }
         }
+      }
+
+      if (!currentRoomCode || !currentToken) return;
+
+      const s = getSocket();
+      if (!s.connected) {
+        // If not connected, immediately connect and emit rejoin
+        s.connect();
+        get().rejoinCurrentRoom();
+      } else {
+        // If already connected, emit lightweight presence:active event
+        s.emit('presence:active', {
+          roomCode: currentRoomCode,
+          playerId: playerId || currentToken,
+        });
+      }
+    };
+
+    // Auto-rejoin when the app returns to the foreground (React Native AppState)
+    if (!appStateSubscription && typeof AppState !== 'undefined') {
+      appStateSubscription = AppState.addEventListener('change', (nextAppState: AppStateStatus) => {
+        if (nextAppState === 'active') {
+          onForegroundOrOnline();
+        }
       });
+    }
+
+    // Web visibilitychange and online event listeners
+    if (typeof window !== 'undefined') {
+      window.addEventListener('online', () => {
+        onForegroundOrOnline();
+      });
+      if (typeof document !== 'undefined') {
+        document.addEventListener('visibilitychange', () => {
+          if (document.visibilityState === 'visible') {
+            onForegroundOrOnline();
+          }
+        });
+      }
     }
 
     // Connect socket
@@ -675,8 +710,8 @@ export const useOnlineStore = create<OnlineStore>((set, get) => ({
 
   async rejoinCurrentRoom(): Promise<boolean> {
     if (isRejoining) return false;
-    const { room, playerId, reconnectToken } = get();
-    if (!room) return false;
+    const { isOnline, room, playerId, reconnectToken } = get();
+    if (!isOnline || !room) return false;
 
     const socket = connectSocket();
     const token = reconnectToken || playerId;
@@ -690,13 +725,17 @@ export const useOnlineStore = create<OnlineStore>((set, get) => ({
           let mergedGameState = get().gameState;
           let version = get().stateVersion;
           if (res.gameState) {
-            const currentHand = get().gameState?.hand ?? [];
-            const stableHand = mergeHandPreservingOrder(currentHand, res.gameState.hand);
-            mergedGameState = {
-              ...res.gameState,
-              hand: stableHand,
-            };
-            version = res.gameState.version ?? version;
+            // Requirement 4: Replace local state with server full state using state version
+            // so stale updates (version <= current version) are ignored
+            if (res.gameState.version === undefined || res.gameState.version >= version) {
+              const currentHand = get().gameState?.hand ?? [];
+              const stableHand = mergeHandPreservingOrder(currentHand, res.gameState.hand);
+              mergedGameState = {
+                ...res.gameState,
+                hand: stableHand,
+              };
+              version = res.gameState.version ?? version;
+            }
           }
           set({
             status: 'connected',
@@ -707,11 +746,18 @@ export const useOnlineStore = create<OnlineStore>((set, get) => ({
           });
           resolve(true);
         } else {
-          // If room doesn't exist anymore on server (e.g. server restart/spin-down)
-          if (res.error?.includes('does not exist')) {
+          // Requirement 5: If room doesn't exist anymore on server (e.g. server restart/spin-down)
+          if (
+            res.error?.includes('does not exist') ||
+            res.error?.includes('closed') ||
+            res.error?.includes('not recognized')
+          ) {
             storage.removeItem(LAST_ACTIVE_ROOM_KEY);
-            clearPlayerRoomSession(room.roomCode);
+            if (room?.roomCode) {
+              clearPlayerRoomSession(room.roomCode);
+            }
             set({
+              status: 'disconnected',
               errorMessage: 'Match has ended or server restarted.',
             });
           }
@@ -723,16 +769,69 @@ export const useOnlineStore = create<OnlineStore>((set, get) => ({
 
   async leaveRoom() {
     const { room, playerId } = get();
-    if (room && playerId) {
-      const socket = getSocket();
-      socket.emit('leaveRoom', { roomCode: room.roomCode, playerId }, () => {});
-      await clearPlayerRoomSession(room.roomCode);
-      await storage.removeItem(LAST_ACTIVE_ROOM_KEY);
+    const code = room?.roomCode?.trim().toUpperCase();
+    const pid = playerId;
+
+    // 1. Immediately clear saved room code and reconnect token from AsyncStorage
+    if (code) {
+      try {
+        await clearPlayerRoomSession(code);
+      } catch (e) {
+        console.warn('Error clearing room session:', e);
+      }
     }
+    try {
+      await storage.removeItem(LAST_ACTIVE_ROOM_KEY);
+    } catch (e) {
+      console.warn('Error removing active room key:', e);
+    }
+
+    // 2. Emit leaveRoom to server in background with a 3-second fallback
+    if (code && pid) {
+      try {
+        const socket = getSocket();
+        if (socket && socket.connected) {
+          let timer: any = null;
+          timer = setTimeout(() => {
+            timer = null;
+          }, 3000);
+          if (timer && typeof timer.unref === 'function') timer.unref();
+          socket.emit('leaveRoom', { roomCode: code, playerId: pid }, () => {
+            if (timer) clearTimeout(timer);
+          });
+        } else if (socket) {
+          // Socket is currently disconnected: wait up to 3s fallback
+          let timer: any = null;
+          const onConnect = () => {
+            if (timer) clearTimeout(timer);
+            socket.emit('leaveRoom', { roomCode: code, playerId: pid }, () => {});
+          };
+          timer = setTimeout(() => {
+            socket.off('connect', onConnect);
+          }, 3000);
+          if (timer && typeof timer.unref === 'function') timer.unref();
+          socket.once('connect', onConnect);
+        }
+      } catch (e) {
+        console.warn('Error emitting leaveRoom:', e);
+      }
+    }
+
+    // 3. Reset online store (socket listeners, room state, hand)
     get().resetOnlineState();
   },
 
   resetOnlineState() {
+    try {
+      const socket = getSocket();
+      socket.off('roomUpdated');
+      socket.off('gameStateUpdated');
+      socket.off('gameIncrementalUpdate');
+      socket.off('notification');
+      socket.off('error');
+    } catch {}
+    socketInitialized = false;
+
     set({
       isOnline: false,
       room: null,

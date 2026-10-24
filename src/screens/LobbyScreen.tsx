@@ -17,7 +17,14 @@ import {
   BackHandler,
 } from 'react-native';
 import * as Haptics from 'expo-haptics';
-import { ScreenBackground, GlassPanel, PrimaryButton, ScreenHeader } from '../components';
+import * as Clipboard from 'expo-clipboard';
+import {
+  ScreenBackground,
+  GlassPanel,
+  PrimaryButton,
+  ScreenHeader,
+  RoomCodePill,
+} from '../components';
 import { palette, radius, spacing, typography } from '../theme';
 import { ScreenProps } from './types';
 import { useOnlineStore } from '../store/onlineStore';
@@ -97,7 +104,7 @@ export const LobbyScreen: React.FC<ScreenProps<'Lobby'>> = ({ navigation }) => {
           <PrimaryButton
             title="Return to Home"
             variant="gold"
-            onPress={() => navigation.navigate('Home')}
+            onPress={() => navigation.reset({ index: 0, routes: [{ name: 'Home' }] })}
           />
         </View>
       </ScreenBackground>
@@ -111,6 +118,22 @@ export const LobbyScreen: React.FC<ScreenProps<'Lobby'>> = ({ navigation }) => {
 
   const isValidCount =
     ALLOWED_PLAYER_COUNTS.includes(playerCount) && playerCount % teamCount === 0;
+
+  const [copiedToast, setCopiedToast] = useState(false);
+
+  const handleCopyCode = async () => {
+    if (!room?.roomCode) return;
+    try {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    } catch {}
+    try {
+      await Clipboard.setStringAsync(room.roomCode);
+      setCopiedToast(true);
+      setTimeout(() => setCopiedToast(false), 2000);
+    } catch (e) {
+      console.warn('Clipboard copy error:', e);
+    }
+  };
 
   const handleShareCode = async () => {
     try {
@@ -148,26 +171,50 @@ export const LobbyScreen: React.FC<ScreenProps<'Lobby'>> = ({ navigation }) => {
 
   const isLeavingRef = useRef(false);
 
-  const handleLeave = async () => {
+  const handleLeave = () => {
     if (isLeavingRef.current) return;
+    isLeavingRef.current = true;
     try {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     } catch {}
-    isLeavingRef.current = true;
-    await leaveRoom();
-    navigation.navigate('Home');
+
+    // Emit leaveRoom in background without waiting for server response
+    leaveRoom();
+
+    // Reset navigation stack to Home so Back cannot return to lobby
+    navigation.reset({
+      index: 0,
+      routes: [{ name: 'Home' }],
+    });
+  };
+
+  const confirmLeave = () => {
+    if (isLeavingRef.current) return;
+    Alert.alert(
+      'Leave Lobby?',
+      'Are you sure you want to leave this room?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Leave',
+          style: 'destructive',
+          onPress: () => handleLeave(),
+        },
+      ]
+    );
   };
 
   useEffect(() => {
     const onBackPress = () => {
-      handleLeave();
+      if (isLeavingRef.current) return false;
+      confirmLeave();
       return true;
     };
     const sub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
     const unsub = navigation.addListener('beforeRemove', (e) => {
       if (isLeavingRef.current) return;
       e.preventDefault();
-      handleLeave();
+      confirmLeave();
     });
     return () => {
       sub.remove();
@@ -194,34 +241,53 @@ export const LobbyScreen: React.FC<ScreenProps<'Lobby'>> = ({ navigation }) => {
           onBack={handleLeave}
           backLabel="‹ Leave"
           rightAction={
-            <View style={styles.connectionStatus}>
-              <View
-                style={[
-                  styles.statusDot,
-                  {
-                    backgroundColor:
-                      status === 'connected'
-                        ? '#22C55E'
-                        : status === 'connecting'
-                        ? '#F59E0B'
-                        : '#EF4444',
-                  },
-                ]}
-              />
-              <Text style={styles.statusLabel}>
-                {status === 'connected'
-                  ? 'Online'
-                  : status === 'connecting'
-                  ? 'Connecting...'
-                  : 'Offline'}
-              </Text>
+            <View style={styles.headerRightArea}>
+              <RoomCodePill roomCode={room.roomCode} compact />
+              <View style={styles.connectionStatus}>
+                <View
+                  style={[
+                    styles.statusDot,
+                    {
+                      backgroundColor:
+                        status === 'connected'
+                          ? '#22C55E'
+                          : status === 'connecting'
+                          ? '#F59E0B'
+                          : '#EF4444',
+                    },
+                  ]}
+                />
+                <Text style={styles.statusLabel} numberOfLines={1} ellipsizeMode="tail">
+                  {status === 'connected'
+                    ? 'Online'
+                    : status === 'connecting'
+                    ? 'Connecting...'
+                    : 'Offline'}
+                </Text>
+              </View>
             </View>
           }
         />
 
         {/* Room Code Showcase */}
-        <View style={styles.roomCodeCard}>
-          <Text style={styles.roomCodeTitle}>ROOM CODE</Text>
+        <TouchableOpacity
+          activeOpacity={0.85}
+          onPress={handleCopyCode}
+          style={styles.roomCodeCard}
+          accessibilityRole="button"
+          accessibilityLabel={`Room code ${room.roomCode}. Tap to copy, or share with friends.`}
+        >
+          <View style={styles.roomCodeHeaderRow}>
+            <Text style={styles.roomCodeTitle}>ROOM CODE</Text>
+            {copiedToast ? (
+              <View style={styles.copiedBanner}>
+                <Text style={styles.copiedBannerText}>✓ Copied to clipboard!</Text>
+              </View>
+            ) : (
+              <Text style={styles.tapToCopyHint}>Tap to copy 📋</Text>
+            )}
+          </View>
+
           <View style={styles.codeRow}>
             {room.roomCode.split('').map((char, i) => (
               <View key={i} style={styles.codeCharBox}>
@@ -234,16 +300,27 @@ export const LobbyScreen: React.FC<ScreenProps<'Lobby'>> = ({ navigation }) => {
             activeOpacity={0.8}
             onPress={handleShareCode}
             style={styles.shareBtn}
+            accessibilityLabel="Share room code with friends"
           >
             <Text style={styles.shareBtnIcon}>🔗</Text>
             <Text style={styles.shareBtnText}>Share Room Code</Text>
           </TouchableOpacity>
-        </View>
+        </TouchableOpacity>
 
         {/* Error message banner if any */}
         {errorMessage && (
           <View style={styles.errorBanner}>
             <Text style={styles.errorText}>{errorMessage}</Text>
+            <TouchableOpacity
+              style={styles.errorHomeBtn}
+              onPress={() => {
+                leaveRoom();
+                navigation.reset({ index: 0, routes: [{ name: 'Home' }] });
+              }}
+              accessibilityLabel="Return to Home"
+            >
+              <Text style={styles.errorHomeBtnText}>Home</Text>
+            </TouchableOpacity>
             <TouchableOpacity onPress={clearError}>
               <Text style={styles.errorDismiss}>✕</Text>
             </TouchableOpacity>
@@ -336,9 +413,9 @@ export const LobbyScreen: React.FC<ScreenProps<'Lobby'>> = ({ navigation }) => {
                       <Text style={styles.teamPillText}>Seat {p.seat + 1}</Text>
                     </View>
 
-                    <View>
+                    <View style={styles.playerInfoWrapper}>
                       <View style={styles.playerNameRow}>
-                        <Text style={styles.playerName}>
+                        <Text style={styles.playerName} numberOfLines={1} ellipsizeMode="tail">
                           {p.name} {isCurrentMe && '(You)'}
                         </Text>
                         {p.isHost && (
@@ -347,7 +424,11 @@ export const LobbyScreen: React.FC<ScreenProps<'Lobby'>> = ({ navigation }) => {
                           </View>
                         )}
                       </View>
-                      <Text style={[styles.teamSubtext, { color: teamColor }]}>
+                      <Text
+                        style={[styles.teamSubtext, { color: teamColor }]}
+                        numberOfLines={1}
+                        ellipsizeMode="tail"
+                      >
                         Team {p.teamId.toUpperCase()}
                       </Text>
                     </View>
@@ -358,11 +439,12 @@ export const LobbyScreen: React.FC<ScreenProps<'Lobby'>> = ({ navigation }) => {
                     {p.isConnected ? (
                       <View style={styles.readyIndicator}>
                         <View style={styles.readyDot} />
-                        <Text style={styles.readyText}>Ready</Text>
+                        <Text style={styles.readyText} numberOfLines={1}>Online</Text>
                       </View>
                     ) : (
                       <View style={styles.disconnectedIndicator}>
-                        <Text style={styles.disconnectedText}>
+                        <View style={[styles.readyDot, { backgroundColor: '#94A3B8' }]} />
+                        <Text style={styles.disconnectedText} numberOfLines={1}>
                           {p.isBotControlled ? '🤖 Bot' : 'Offline'}
                         </Text>
                       </View>
@@ -406,7 +488,12 @@ export const LobbyScreen: React.FC<ScreenProps<'Lobby'>> = ({ navigation }) => {
                 ]}
               >
                 <Text style={styles.waitingDot}>⏳</Text>
-                <Text style={styles.waitingText}>
+                <Text
+                  style={styles.waitingText}
+                  numberOfLines={1}
+                  ellipsizeMode="tail"
+                  adjustsFontSizeToFit
+                >
                   Waiting for host to start the game...
                 </Text>
               </Animated.View>
@@ -492,6 +579,11 @@ const styles = StyleSheet.create({
     color: '#CBD5E1',
     fontWeight: '700',
   },
+  headerRightArea: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+  },
   connectionStatus: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -522,6 +614,32 @@ const styles = StyleSheet.create({
     padding: spacing.lg,
     alignItems: 'center',
     gap: spacing.md,
+  },
+  roomCodeHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    width: '100%',
+  },
+  tapToCopyHint: {
+    ...typography.caption,
+    fontSize: 11,
+    color: '#94A3B8',
+    fontWeight: '600',
+  },
+  copiedBanner: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: radius.full,
+    backgroundColor: 'rgba(34, 197, 94, 0.2)',
+    borderWidth: 1,
+    borderColor: '#22C55E',
+  },
+  copiedBannerText: {
+    ...typography.caption,
+    fontSize: 11,
+    color: '#86EFAC',
+    fontWeight: '700',
   },
   roomCodeTitle: {
     ...typography.caption,
@@ -590,6 +708,19 @@ const styles = StyleSheet.create({
     color: '#FCA5A5',
     fontSize: 16,
     paddingLeft: spacing.sm,
+  },
+  errorHomeBtn: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 4,
+    borderRadius: radius.sm,
+    backgroundColor: 'rgba(239, 68, 68, 0.4)',
+    marginHorizontal: spacing.xs,
+  },
+  errorHomeBtnText: {
+    ...typography.caption,
+    color: '#FFFFFF',
+    fontWeight: '700',
+    fontSize: 11,
   },
   hostControlPanel: {
     width: '100%',
@@ -678,9 +809,17 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(245, 200, 76, 0.08)',
   },
   playerLeft: {
+    flex: 1,
+    minWidth: 0,
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.sm,
+    paddingRight: spacing.xs,
+  },
+  playerInfoWrapper: {
+    flex: 1,
+    minWidth: 0,
+    justifyContent: 'center',
   },
   teamPill: {
     paddingHorizontal: 8,

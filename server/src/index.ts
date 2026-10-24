@@ -82,7 +82,7 @@ const io = new Server<
     credentials: true,
   },
   pingInterval: 10000,
-  pingTimeout: 20000,
+  pingTimeout: 25000,
 });
 
 

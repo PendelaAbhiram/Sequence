@@ -26,6 +26,7 @@ import {
   TurnBanner,
   ReshuffleBanner,
   PrimaryButton,
+  RoomCodePill,
 } from '../components';
 import { palette, radius, spacing, typography } from '../theme';
 import { useResponsiveLayout } from '../utils';
@@ -44,8 +45,11 @@ export const GameScreen: React.FC<ScreenProps<'Game'>> = ({ navigation }) => {
   // ── Online Store Bindings ───────────────────────────────────────────────────
   const isOnline = useOnlineStore((s) => s.isOnline);
   const onlineGameState = useOnlineStore((s) => s.gameState);
+  const room = useOnlineStore((s) => s.room);
+  const onlineRoomCode = onlineGameState?.roomCode ?? room?.roomCode ?? null;
   const onlinePlayerId = useOnlineStore((s) => s.playerId);
   const onlineStatus = useOnlineStore((s) => s.status);
+  const onlineErrorMessage = useOnlineStore((s) => s.errorMessage);
   const onlineSelectedCard = useOnlineStore((s) => s.selectedCard);
   const onlineValidTargets = useOnlineStore((s) => s.validTargets);
   const onlineSelectCard = useOnlineStore((s) => s.selectCard);
@@ -224,7 +228,10 @@ export const GameScreen: React.FC<ScreenProps<'Game'>> = ({ navigation }) => {
     if (game) {
       await storage.setItem(GAME_SAVE_STORAGE_KEY, JSON.stringify(game));
     }
-    navigation.navigate('Home');
+    navigation.reset({
+      index: 0,
+      routes: [{ name: 'Home' }],
+    });
   };
 
   const handleLeaveWithoutSaving = async () => {
@@ -236,18 +243,24 @@ export const GameScreen: React.FC<ScreenProps<'Game'>> = ({ navigation }) => {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     } catch {}
     await clearSavedGame();
-    navigation.navigate('Home');
+    navigation.reset({
+      index: 0,
+      routes: [{ name: 'Home' }],
+    });
   };
 
-  const handleLeaveOnline = async () => {
+  const handleLeaveOnline = () => {
     if (isLeavingRef.current) return;
     isLeavingRef.current = true;
     setExitModalVisible(false);
     try {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     } catch {}
-    await leaveRoom();
-    navigation.navigate('Home');
+    leaveRoom();
+    navigation.reset({
+      index: 0,
+      routes: [{ name: 'Home' }],
+    });
   };
 
   // Intercept hardware back button & swipe-back gesture
@@ -472,19 +485,83 @@ export const GameScreen: React.FC<ScreenProps<'Game'>> = ({ navigation }) => {
 
         {/* Top Navigation & Status Bar */}
         <View style={styles.topBar}>
-          <View style={styles.topBarLeft}>
-            {/* Menu / Exit Button */}
-            <TouchableOpacity
-              activeOpacity={0.7}
-              style={styles.exitMenuBtn}
-              onPress={() => setExitModalVisible(true)}
-              accessibilityLabel="Leave match"
-              accessibilityRole="button"
-            >
-              <Text style={styles.exitMenuBtnText}>✕</Text>
-            </TouchableOpacity>
+          {/* Tier 1: Header row with Exit, RoomCodePill, Sound and Score badges */}
+          <View style={styles.topHeaderRow}>
+            <View style={styles.topHeaderLeft}>
+              {/* Menu / Exit Button */}
+              <TouchableOpacity
+                activeOpacity={0.7}
+                style={styles.exitMenuBtn}
+                onPress={() => setExitModalVisible(true)}
+                accessibilityLabel="Leave match"
+                accessibilityRole="button"
+              >
+                <Text style={styles.exitMenuBtnText}>✕</Text>
+              </TouchableOpacity>
 
-            {/* Active Turn Indicator */}
+              {/* In Online Mode: Always-Visible Room Code Pill */}
+              {isOnline && <RoomCodePill roomCode={onlineRoomCode} compact />}
+            </View>
+
+            {/* Sequence Score Badges & Audio Toggles */}
+            <View style={styles.scoresRow}>
+              {/* Audio Toggles */}
+              <TouchableOpacity
+                activeOpacity={0.7}
+                onPress={toggleSfx}
+                style={[styles.audioBtn, !sfxOn && styles.audioBtnMuted]}
+                accessibilityLabel={sfxOn ? 'Mute sound effects' : 'Unmute sound effects'}
+              >
+                <Text style={styles.audioBtnText}>{sfxOn ? '🔊' : '🔇'}</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                activeOpacity={0.7}
+                onPress={toggleBgm}
+                style={[styles.audioBtn, !bgmOn && styles.audioBtnMuted]}
+                accessibilityLabel={bgmOn ? 'Mute background music' : 'Play background music'}
+              >
+                <Text style={styles.audioBtnText}>{bgmOn ? '🎵' : '⏸️'}</Text>
+              </TouchableOpacity>
+
+              {/* Score Badges */}
+              <View style={[styles.teamScoreBadge, { borderColor: palette.red }]}>
+                <View style={[styles.dot, { backgroundColor: palette.red }]} />
+                <Text style={styles.scoreText}>
+                  {activeSequenceCounts.red ?? 0}/{activeSequencesNeeded}
+                </Text>
+              </View>
+
+              <View style={[styles.teamScoreBadge, { borderColor: palette.blue }]}>
+                <View style={[styles.dot, { backgroundColor: palette.blue }]} />
+                <Text style={styles.scoreText}>
+                  {activeSequenceCounts.blue ?? 0}/{activeSequencesNeeded}
+                </Text>
+              </View>
+
+              {activeSequenceCounts.green !== undefined && (
+                <View style={[styles.teamScoreBadge, { borderColor: palette.green }]}>
+                  <View style={[styles.dot, { backgroundColor: palette.green }]} />
+                  <Text style={styles.scoreText}>
+                    {activeSequenceCounts.green ?? 0}/{activeSequencesNeeded}
+                  </Text>
+                </View>
+              )}
+
+              {/* Discard Pile Action Button */}
+              <TouchableOpacity
+                activeOpacity={0.75}
+                style={styles.discardSheetBtn}
+                onPress={() => setDiscardSheetVisible(true)}
+                accessibilityLabel="View player discard piles"
+              >
+                <Text style={styles.discardSheetBtnText}>🂠</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          {/* Tier 2: Turn Indicator & Status Text - dedicated full-width horizontal bar */}
+          <View style={styles.turnStatusBar}>
             <View style={styles.turnBadgeContainer}>
               <View style={[styles.playerChipCircle, { backgroundColor: activeTeamColor }]}>
                 <Text style={styles.playerChipText}>
@@ -492,10 +569,20 @@ export const GameScreen: React.FC<ScreenProps<'Game'>> = ({ navigation }) => {
                 </Text>
               </View>
               <View style={styles.turnNameWrapper}>
-                <Text style={styles.turnName} numberOfLines={1}>
+                <Text
+                  style={styles.turnName}
+                  numberOfLines={1}
+                  ellipsizeMode="tail"
+                  adjustsFontSizeToFit
+                >
                   {activePlayerName} {isOnline && isMyTurnOnline ? '(You)' : ''}
                 </Text>
-                <Text style={[styles.teamSubtext, { color: activeTeamColor }]}>
+                <Text
+                  style={[styles.teamSubtext, { color: activeTeamColor }]}
+                  numberOfLines={1}
+                  ellipsizeMode="tail"
+                  adjustsFontSizeToFit
+                >
                   {isOnline
                     ? isMyTurnOnline
                       ? '🎯 Your Turn'
@@ -506,11 +593,8 @@ export const GameScreen: React.FC<ScreenProps<'Game'>> = ({ navigation }) => {
                 </Text>
               </View>
             </View>
-          </View>
 
-          {/* Sequence Score Badges & Audio Toggles */}
-          <View style={styles.scoresRow}>
-            {/* Online Connection Dot */}
+            {/* Online Connection Status Indicator */}
             {isOnline && (
               <View style={styles.networkDotContainer}>
                 <View
@@ -526,65 +610,22 @@ export const GameScreen: React.FC<ScreenProps<'Game'>> = ({ navigation }) => {
                     },
                   ]}
                 />
-                {onlineStatus !== 'connected' && (
-                  <Text style={styles.reconnectingDotText}>Reconnecting...</Text>
-                )}
-              </View>
-            )}
-
-
-            {/* Audio Toggles */}
-            <TouchableOpacity
-              activeOpacity={0.7}
-              onPress={toggleSfx}
-              style={[styles.audioBtn, !sfxOn && styles.audioBtnMuted]}
-              accessibilityLabel={sfxOn ? 'Mute sound effects' : 'Unmute sound effects'}
-            >
-              <Text style={styles.audioBtnText}>{sfxOn ? '🔊' : '🔇'}</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              activeOpacity={0.7}
-              onPress={toggleBgm}
-              style={[styles.audioBtn, !bgmOn && styles.audioBtnMuted]}
-              accessibilityLabel={bgmOn ? 'Mute background music' : 'Play background music'}
-            >
-              <Text style={styles.audioBtnText}>{bgmOn ? '🎵' : '⏸️'}</Text>
-            </TouchableOpacity>
-
-            {/* Score Badges */}
-            <View style={[styles.teamScoreBadge, { borderColor: palette.red }]}>
-              <View style={[styles.dot, { backgroundColor: palette.red }]} />
-              <Text style={styles.scoreText}>
-                {activeSequenceCounts.red ?? 0}/{activeSequencesNeeded}
-              </Text>
-            </View>
-
-            <View style={[styles.teamScoreBadge, { borderColor: palette.blue }]}>
-              <View style={[styles.dot, { backgroundColor: palette.blue }]} />
-              <Text style={styles.scoreText}>
-                {activeSequenceCounts.blue ?? 0}/{activeSequencesNeeded}
-              </Text>
-            </View>
-
-            {activeSequenceCounts.green !== undefined && (
-              <View style={[styles.teamScoreBadge, { borderColor: palette.green }]}>
-                <View style={[styles.dot, { backgroundColor: palette.green }]} />
-                <Text style={styles.scoreText}>
-                  {activeSequenceCounts.green ?? 0}/{activeSequencesNeeded}
+                <Text
+                  style={[
+                    styles.reconnectingDotText,
+                    onlineStatus === 'connected' && { color: '#86EFAC' },
+                  ]}
+                  numberOfLines={1}
+                  ellipsizeMode="tail"
+                >
+                  {onlineStatus === 'connected'
+                    ? 'Online'
+                    : onlineStatus === 'connecting'
+                    ? 'Reconnecting...'
+                    : 'Offline'}
                 </Text>
               </View>
             )}
-
-            {/* Discard Pile Action Button */}
-            <TouchableOpacity
-              activeOpacity={0.75}
-              style={styles.discardSheetBtn}
-              onPress={() => setDiscardSheetVisible(true)}
-              accessibilityLabel="View player discard piles"
-            >
-              <Text style={styles.discardSheetBtnText}>🂠</Text>
-            </TouchableOpacity>
           </View>
         </View>
 
@@ -619,13 +660,30 @@ export const GameScreen: React.FC<ScreenProps<'Game'>> = ({ navigation }) => {
                         <View style={[styles.miniSeatDot, { backgroundColor: teamColor }]}>
                           <Text style={styles.miniSeatText}>{p.seat + 1}</Text>
                         </View>
-                        <View>
-                          <Text style={styles.opponentPillName} numberOfLines={1}>
-                            {p.name} {isMe ? '(You)' : ''}
-                          </Text>
-                          <Text style={styles.opponentCardCount}>
+                        <View style={styles.opponentTextWrapper}>
+                          <View style={styles.playerStatusNameRow}>
+                            <View
+                              style={[
+                                styles.playerStatusDot,
+                                { backgroundColor: p.isConnected ? '#22C55E' : '#94A3B8' },
+                              ]}
+                            />
+                            <Text
+                              style={styles.opponentPillName}
+                              numberOfLines={1}
+                              ellipsizeMode="tail"
+                              adjustsFontSizeToFit
+                            >
+                              {p.name} {isMe ? '(You)' : ''}
+                            </Text>
+                          </View>
+                          <Text
+                            style={styles.opponentCardCount}
+                            numberOfLines={1}
+                            ellipsizeMode="tail"
+                          >
                             {isMe ? `${activeHand.length} cards` : `🂠 ${p.cardCount} cards`}
-                            {!p.isConnected && (p.isBotControlled ? ' • 🤖' : ' • ⚪')}
+                            {p.isBotControlled ? ' • 🤖' : ''}
                           </Text>
                         </View>
                       </View>
@@ -654,11 +712,20 @@ export const GameScreen: React.FC<ScreenProps<'Game'>> = ({ navigation }) => {
                         <View style={[styles.miniSeatDot, { backgroundColor: teamColor }]}>
                           <Text style={styles.miniSeatText}>{p.seat + 1}</Text>
                         </View>
-                        <View>
-                          <Text style={styles.opponentPillName} numberOfLines={1}>
+                        <View style={styles.opponentTextWrapper}>
+                          <Text
+                            style={styles.opponentPillName}
+                            numberOfLines={1}
+                            ellipsizeMode="tail"
+                            adjustsFontSizeToFit
+                          >
                             {p.name} {isMe ? '(You)' : ''}
                           </Text>
-                          <Text style={styles.opponentCardCount}>
+                          <Text
+                            style={styles.opponentCardCount}
+                            numberOfLines={1}
+                            ellipsizeMode="tail"
+                          >
                             {isMe
                               ? `${p.hand.length} cards`
                               : `🂠 ${p.hand.length} cards`}
@@ -697,19 +764,39 @@ export const GameScreen: React.FC<ScreenProps<'Game'>> = ({ navigation }) => {
               YOUR HAND ({activeHand.length} CARDS)
             </Text>
             {activeSelectedCard ? (
-              <Text style={styles.selectionHint}>
+              <Text
+                style={styles.selectionHint}
+                numberOfLines={1}
+                ellipsizeMode="tail"
+                adjustsFontSizeToFit
+              >
                 Tap a highlighted board cell to place chip
               </Text>
             ) : isOnline && !isMyTurnOnline ? (
-              <Text style={styles.waitTurnHint}>
+              <Text
+                style={styles.waitTurnHint}
+                numberOfLines={1}
+                ellipsizeMode="tail"
+                adjustsFontSizeToFit
+              >
                 Waiting for {activePlayerName}'s turn...
               </Text>
             ) : !isOnline && game?.settings.mode === 'bot' && isBotThinking ? (
-              <Text style={styles.thinkingHint}>
+              <Text
+                style={styles.thinkingHint}
+                numberOfLines={1}
+                ellipsizeMode="tail"
+                adjustsFontSizeToFit
+              >
                 🤖 {activePlayerName} is thinking...
               </Text>
             ) : !isOnline && game?.settings.mode === 'bot' && game.currentPlayerIndex > 0 ? (
-              <Text style={styles.waitTurnHint}>
+              <Text
+                style={styles.waitTurnHint}
+                numberOfLines={1}
+                ellipsizeMode="tail"
+                adjustsFontSizeToFit
+              >
                 Waiting for {activePlayerName}'s turn...
               </Text>
             ) : null}
@@ -849,6 +936,39 @@ export const GameScreen: React.FC<ScreenProps<'Game'>> = ({ navigation }) => {
           </View>
         </View>
       </Modal>
+
+      {/* Server Restarted / Room Closed Modal */}
+      <Modal
+        visible={Boolean(isOnline && onlineErrorMessage)}
+        transparent
+        animationType="fade"
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={[styles.modalTitle, { color: '#F87171' }]}>Match Unavailable</Text>
+            <Text style={styles.modalSubtitle}>
+              {onlineErrorMessage || 'The match has ended or the server restarted.'}
+            </Text>
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                activeOpacity={0.85}
+                style={[styles.modalBtn, styles.leaveBtn, { backgroundColor: palette.gold }]}
+                onPress={() => {
+                  leaveRoom();
+                  navigation.reset({
+                    index: 0,
+                    routes: [{ name: 'Home' }],
+                  });
+                }}
+              >
+                <Text style={[styles.leaveBtnText, { color: '#071624', fontWeight: '800' }]}>
+                  Return to Home
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </ScreenBackground>
   );
 };
@@ -877,26 +997,38 @@ const styles = StyleSheet.create({
     color: '#FDE68A',
   },
   topBar: {
+    backgroundColor: 'rgba(10, 20, 32, 0.88)',
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
+    paddingHorizontal: spacing.sm,
+    paddingTop: spacing.xs,
+    paddingBottom: spacing.xs,
+    gap: 6,
+  },
+  topHeaderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: spacing.base,
-    paddingVertical: spacing.xs,
-    backgroundColor: 'rgba(10, 20, 32, 0.75)',
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
+    width: '100%',
   },
-  topBarLeft: {
+  topHeaderLeft: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: spacing.sm,
+    gap: spacing.xs,
     flexShrink: 1,
-    marginRight: spacing.xs,
+  },
+  turnStatusBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    width: '100%',
+    paddingHorizontal: 2,
+    gap: spacing.sm,
   },
   exitMenuBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     backgroundColor: 'rgba(255, 255, 255, 0.12)',
     alignItems: 'center',
     justifyContent: 'center',
@@ -909,13 +1041,16 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   turnBadgeContainer: {
+    flex: 1,
+    minWidth: 0,
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.xs,
-    flexShrink: 1,
   },
   turnNameWrapper: {
-    flexShrink: 1,
+    flex: 1,
+    minWidth: 0,
+    justifyContent: 'center',
   },
   notificationToast: {
     flexDirection: 'row',
@@ -1078,12 +1213,27 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     color: '#FFFFFF',
   },
+  opponentTextWrapper: {
+    flexShrink: 1,
+    minWidth: 0,
+  },
+  playerStatusNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    minWidth: 0,
+  },
+  playerStatusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
   opponentPillName: {
     ...typography.caption,
     fontSize: 11,
     color: '#FFFFFF',
     fontWeight: '700',
-    maxWidth: 90,
+    maxWidth: 110,
   },
   opponentCardCount: {
     ...typography.caption,
@@ -1111,6 +1261,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: spacing.lg,
+    gap: spacing.sm,
   },
   handTitle: {
     ...typography.caption,
@@ -1118,24 +1269,34 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: palette.gold,
     letterSpacing: 1.5,
+    flexShrink: 0,
   },
   selectionHint: {
     ...typography.caption,
     fontSize: 11,
     color: '#38BDF8',
     fontWeight: '600',
+    flexShrink: 1,
+    minWidth: 0,
+    textAlign: 'right',
   },
   waitTurnHint: {
     ...typography.caption,
     fontSize: 11,
     color: '#94A3B8',
     fontStyle: 'italic',
+    flexShrink: 1,
+    minWidth: 0,
+    textAlign: 'right',
   },
   thinkingHint: {
     ...typography.caption,
     fontSize: 11,
     color: palette.gold,
     fontWeight: '700',
+    flexShrink: 1,
+    minWidth: 0,
+    textAlign: 'right',
   },
   fannedCardsContainer: {
     paddingHorizontal: spacing.lg,

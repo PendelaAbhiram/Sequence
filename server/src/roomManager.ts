@@ -47,14 +47,20 @@ export interface ActiveRoom {
   version: number;
 }
 
+export interface DisconnectTimers {
+  graceTimer?: NodeJS.Timeout;
+  botTimer?: NodeJS.Timeout;
+}
+
 export class RoomManager {
   public static readonly INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
-  public disconnectTimeoutMs: number = 60 * 1000; // 60 seconds
+  public gracePeriodMs: number = 30 * 1000; // 30 seconds grace period
+  public disconnectTimeoutMs: number = 60 * 1000; // 60 seconds bot takeover
   private rooms: Map<string, ActiveRoom> = new Map();
   // Quick lookup: socketId -> { roomCode, playerId }
   private socketMap: Map<string, { roomCode: string; playerId: string }> = new Map();
   private cleanupInterval: NodeJS.Timeout | null = null;
-  private disconnectTimers: Map<string, NodeJS.Timeout> = new Map();
+  private disconnectTimers: Map<string, DisconnectTimers> = new Map();
 
   // Callbacks for broadcasting state changes
   public onGameStateChange?: (roomCode: string) => void;
@@ -78,10 +84,21 @@ export class RoomManager {
       clearInterval(this.cleanupInterval);
       this.cleanupInterval = null;
     }
-    for (const timer of this.disconnectTimers.values()) {
-      clearTimeout(timer);
+    for (const timers of this.disconnectTimers.values()) {
+      if (timers.graceTimer) clearTimeout(timers.graceTimer);
+      if (timers.botTimer) clearTimeout(timers.botTimer);
     }
     this.disconnectTimers.clear();
+  }
+
+  public clearDisconnectTimers(roomCode: string, playerId: string): void {
+    const timerKey = `${roomCode.trim().toUpperCase()}:${playerId}`;
+    const timers = this.disconnectTimers.get(timerKey);
+    if (timers) {
+      if (timers.graceTimer) clearTimeout(timers.graceTimer);
+      if (timers.botTimer) clearTimeout(timers.botTimer);
+      this.disconnectTimers.delete(timerKey);
+    }
   }
 
   /**
@@ -209,12 +226,7 @@ export class RoomManager {
         delete existing.disconnectedAt;
 
         // Clear disconnect timer if active
-        const timerKey = `${code}:${existing.id}`;
-        const timer = this.disconnectTimers.get(timerKey);
-        if (timer) {
-          clearTimeout(timer);
-          this.disconnectTimers.delete(timerKey);
-        }
+        this.clearDisconnectTimers(code, existing.id);
 
         if (playerName && playerName.trim()) {
           existing.name = playerName.trim();
@@ -231,7 +243,10 @@ export class RoomManager {
       }
     }
 
-    if (room.status !== 'lobby') {
+    if (room.status !== 'lobby' || room.players.length === 0) {
+      if (room.players.length === 0) {
+        return { success: false, error: `Room ${code} is closed.` };
+      }
       return { success: false, error: 'Game is already in progress in this room.' };
     }
 
@@ -637,12 +652,7 @@ export class RoomManager {
     }
 
     // Cancel pending disconnect timer for this player
-    const timerKey = `${code}:${player.id}`;
-    const pendingTimer = this.disconnectTimers.get(timerKey);
-    if (pendingTimer) {
-      clearTimeout(pendingTimer);
-      this.disconnectTimers.delete(timerKey);
-    }
+    this.clearDisconnectTimers(code, player.id);
 
     player.socketId = newSocketId;
     player.isConnected = true;
@@ -695,12 +705,7 @@ export class RoomManager {
     if (idx === -1) return { success: false, error: 'Player not found in room.' };
 
     const leavingPlayer = room.players[idx];
-    const timerKey = `${code}:${playerId}`;
-    const existingTimer = this.disconnectTimers.get(timerKey);
-    if (existingTimer) {
-      clearTimeout(existingTimer);
-      this.disconnectTimers.delete(timerKey);
-    }
+    this.clearDisconnectTimers(code, playerId);
 
     if (leavingPlayer.socketId) {
       this.socketMap.delete(leavingPlayer.socketId);
@@ -795,7 +800,8 @@ export class RoomManager {
 
   /**
    * Handle client socket disconnection.
-   * Marks player offline, schedules 60s timeout for bot takeover or pause.
+   * Disconnect starts a 30s grace period. The player is marked offline ONLY after
+   * the 30s grace period expires. If disconnected for >= 60s, a bot takes over.
    */
   public handleDisconnect(
     socketId: string
@@ -811,28 +817,60 @@ export class RoomManager {
 
     const player = room.players.find((p) => p.id === playerId);
     if (player) {
-      player.isConnected = false;
+      player.socketId = undefined;
       player.disconnectedAt = Date.now();
       room.lastActiveAt = Date.now();
 
-      // If game is playing, schedule 60s timeout for bot takeover
-      if (room.status === 'playing') {
-        const timerKey = `${roomCode}:${playerId}`;
-        const existingTimer = this.disconnectTimers.get(timerKey);
-        if (existingTimer) {
-          clearTimeout(existingTimer);
-        }
+      // Clear any prior pending timers for this player
+      this.clearDisconnectTimers(roomCode, playerId);
 
-        const timer = setTimeout(() => {
+      const timerKey = `${roomCode}:${playerId}`;
+      const timers: DisconnectTimers = {};
+
+      // 1. Grace timer (30s): mark offline only after grace period expires
+      const graceTimer = setTimeout(() => {
+        this.handleGraceTimeout(roomCode, playerId);
+      }, this.gracePeriodMs);
+      if (graceTimer && typeof graceTimer.unref === 'function') {
+        graceTimer.unref();
+      }
+      timers.graceTimer = graceTimer;
+
+      // 2. Bot takeover timer (60s): bot takes over seat if game is playing
+      if (room.status === 'playing') {
+        const botTimer = setTimeout(() => {
           this.handleDisconnectTimeout(roomCode, playerId);
         }, this.disconnectTimeoutMs);
-
-        if (timer && typeof timer.unref === 'function') {
-          timer.unref();
+        if (botTimer && typeof botTimer.unref === 'function') {
+          botTimer.unref();
         }
-        this.disconnectTimers.set(timerKey, timer);
+        timers.botTimer = botTimer;
       }
+
+      this.disconnectTimers.set(timerKey, timers);
     }
+
+    // Do NOT mark offline immediately - grace period active
+    return {
+      roomCode,
+      room: this.getPublicRoomState(room),
+      playerId,
+    };
+  }
+
+  /**
+   * Called when player has been disconnected for >= 30 seconds (grace period expired).
+   * Marks player offline and broadcasts to room.
+   */
+  public handleGraceTimeout(roomCode: string, playerId: string): void {
+    const code = roomCode.trim().toUpperCase();
+    const room = this.rooms.get(code);
+    if (!room) return;
+
+    const player = room.players.find((p) => p.id === playerId);
+    if (!player || player.socketId) return;
+
+    player.isConnected = false;
 
     // In lobby phase, if host disconnects and other players exist, transfer host
     if (room.status === 'lobby' && room.hostId === playerId) {
@@ -844,17 +882,11 @@ export class RoomManager {
     }
 
     if (this.onRoomStateChange) {
-      this.onRoomStateChange(roomCode);
+      this.onRoomStateChange(code);
     }
     if (this.onGameStateChange && room.status === 'playing') {
-      this.onGameStateChange(roomCode);
+      this.onGameStateChange(code);
     }
-
-    return {
-      roomCode,
-      room: this.getPublicRoomState(room),
-      playerId,
-    };
   }
 
   /**
@@ -864,15 +896,20 @@ export class RoomManager {
   public handleDisconnectTimeout(roomCode: string, playerId: string): void {
     const code = roomCode.trim().toUpperCase();
     const timerKey = `${code}:${playerId}`;
-    this.disconnectTimers.delete(timerKey);
-
     const room = this.rooms.get(code);
-    if (!room || room.status !== 'playing') return;
+    if (!room || room.status !== 'playing') {
+      this.clearDisconnectTimers(code, playerId);
+      return;
+    }
 
     const player = room.players.find((p) => p.id === playerId);
-    if (!player || player.isConnected) return;
+    if (!player || player.socketId) {
+      this.clearDisconnectTimers(code, playerId);
+      return;
+    }
 
     // Disconnected for 60 seconds: bot takes over seat
+    player.isConnected = false;
     player.isBotControlled = true;
 
     if (this.onRoomStateChange) {
@@ -892,10 +929,52 @@ export class RoomManager {
   }
 
   /**
+   * Handle lightweight presence:active ping from client
+   * Ensures player is marked online, clears any disconnect timers, and restores seat
+   */
+  public handlePresenceActive(
+    roomCode: string,
+    playerId: string,
+    socketId?: string
+  ): boolean {
+    const code = roomCode.trim().toUpperCase();
+    const room = this.rooms.get(code);
+    if (!room) return false;
+
+    const player = room.players.find((p) => p.id === playerId);
+    if (!player) return false;
+
+    // Cancel all pending disconnect / bot timers
+    this.clearDisconnectTimers(code, playerId);
+
+    const wasOfflineOrBot = !player.isConnected || Boolean(player.isBotControlled);
+
+    if (socketId) {
+      player.socketId = socketId;
+      this.socketMap.set(socketId, { roomCode: code, playerId });
+    }
+    player.isConnected = true;
+    player.isBotControlled = false;
+    delete player.disconnectedAt;
+    room.lastActiveAt = Date.now();
+
+    if (wasOfflineOrBot) {
+      if (this.onRoomStateChange) {
+        this.onRoomStateChange(code);
+      }
+      if (this.onGameStateChange && room.status === 'playing') {
+        this.onGameStateChange(code);
+      }
+    }
+
+    return true;
+  }
+
+  /**
    * Check if a room is considered empty (no players or all players disconnected)
    */
   public isRoomEmpty(room: ActiveRoom): boolean {
-    return room.players.length === 0 || room.players.every((p) => !p.isConnected);
+    return room.players.length === 0 || room.players.every((p) => !p.socketId || !p.isConnected);
   }
 
   /**

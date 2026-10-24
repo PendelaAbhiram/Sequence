@@ -88,7 +88,7 @@ export function registerSocketHandlers(io: SequenceServer) {
   // Wire authoritative state-change callbacks from RoomManager to socket broadcasts
   roomManager.onGameStateChange = (roomCode: string) => {
     const room = roomManager.getRoom(roomCode);
-    if (room && (room.status === 'finished' || room.isPaused)) {
+    if (room && room.engineState) {
       broadcastGameState(io, roomCode);
     }
   };
@@ -101,6 +101,14 @@ export function registerSocketHandlers(io: SequenceServer) {
       io.to(`room-${room.roomCode}`).emit('roomUpdated', roomManager.getPublicRoomState(room));
     }
   };
+
+  // Requirement 9: Send periodic lightweight heartbeats so quiet rooms on Render do not time out
+  const heartbeatTimer = setInterval(() => {
+    io.emit('heartbeat', { timestamp: Date.now() });
+  }, 20000);
+  if (heartbeatTimer && typeof heartbeatTimer.unref === 'function') {
+    heartbeatTimer.unref();
+  }
 
 
   io.on('connection', (socket: SequenceSocket) => {
@@ -291,14 +299,23 @@ export function registerSocketHandlers(io: SequenceServer) {
       }
     });
 
+    // ── 6.75 PRESENCE ACTIVE ──────────────────────────────────────────────────
+    socket.on('presence:active', ({ roomCode, playerId }) => {
+      try {
+        socket.join(`room-${roomCode}`);
+        socket.data.roomCode = roomCode;
+        socket.data.playerId = playerId;
+        roomManager.handlePresenceActive(roomCode, playerId, socket.id);
+        console.log(`[Presence] Player ${playerId} is active in ${roomCode}`);
+      } catch (err: any) {
+        console.warn(`[Presence] Error in presence:active for ${playerId}:`, err?.message);
+      }
+    });
+
     // ── 7. DISCONNECT ──────────────────────────────────────────────────────────
     socket.on('disconnect', () => {
-      const { roomCode, room, playerId } = roomManager.handleDisconnect(socket.id);
-      if (roomCode && room) {
-        io.to(`room-${roomCode}`).emit('roomUpdated', room);
-        broadcastGameState(io, roomCode);
-        console.log(`[Socket] Disconnected: ${socket.id} (Player: ${playerId} in ${roomCode})`);
-      }
+      const { roomCode, playerId } = roomManager.handleDisconnect(socket.id);
+      console.log(`[Socket] Disconnected: ${socket.id} (Player: ${playerId} in ${roomCode}) - grace period started`);
     });
   });
 }

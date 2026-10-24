@@ -132,6 +132,10 @@ describe('Server RoomManager', () => {
       // Disconnect Bob
       manager.handleDisconnect('sock-2');
       let roomState = manager.getRoom(room.roomCode)!;
+      // During grace period, Bob remains connected
+      expect(roomState.players.find((p) => p.id === bobId)?.isConnected).toBe(true);
+      // Grace period expires
+      manager.handleGraceTimeout(room.roomCode, bobId);
       expect(roomState.players.find((p) => p.id === bobId)?.isConnected).toBe(false);
 
       // Bob rejoins with his private reconnect token
@@ -655,6 +659,12 @@ describe('Server RoomManager', () => {
 
       const roomAfterDc = manager.getRoom(room.roomCode)!;
       const bobInRoom = roomAfterDc.players.find((p) => p.id === bobId)!;
+      // During 30-second grace period, player is still marked online
+      expect(bobInRoom.isConnected).toBe(true);
+      expect(bobInRoom.isBotControlled).toBe(false);
+
+      // 30s grace period timeout expires: now marked offline
+      manager.handleGraceTimeout(room.roomCode, bobId);
       expect(bobInRoom.isConnected).toBe(false);
       expect(bobInRoom.isBotControlled).toBe(false);
 
@@ -737,8 +747,8 @@ describe('Server RoomManager', () => {
       };
 
       const turnPlayer = activeRoom.engineState!.players[activeRoom.engineState!.currentPlayerIndex];
-      // Find a playable card and target
-      const card = turnPlayer.hand.find((c) => !isDeadCard(activeRoom.engineState!.board, c))!;
+      // Find a playable non-Jack card and target
+      const card = turnPlayer.hand.find((c) => c.rank !== 'J' && !isDeadCard(activeRoom.engineState!.board, c))!;
       const targets: [number, number][] = [];
       for (let r = 0; r < 10; r++) {
         for (let c = 0; c < 10; c++) {
@@ -918,6 +928,88 @@ describe('Server RoomManager', () => {
 
       const activeRoom = manager.getRoom(room.roomCode)!;
       expect(activeRoom.status).toBe('finished');
+    });
+  });
+
+  // ── 12. RECONNECT & PRESENCE RESILIENCE ─────────────────────────────────────
+  describe('reconnect & presence resilience', () => {
+    test('disconnect then rejoin within the grace period keeps the same hand and shows online', () => {
+      const { room, playerId: aliceId } = manager.createRoom('Alice', { maxPlayers: 2 }, 'sock-1');
+      const { playerId: bobId, reconnectToken: bobToken } = manager.joinRoom(room.roomCode, 'Bob', 'sock-2');
+      manager.startGame(room.roomCode, aliceId);
+
+      const activeRoom = manager.getRoom(room.roomCode)!;
+      const bobInitialHand = [...activeRoom.engineState!.players.find((p) => p.id === bobId)!.hand];
+
+      // Bob disconnects (under 30s grace period)
+      manager.handleDisconnect('sock-2');
+      const bobInRoom = activeRoom.players.find((p) => p.id === bobId)!;
+      expect(bobInRoom.isConnected).toBe(true); // Grace period: still online
+
+      // Bob rejoins within grace period with valid token
+      const rejoinResult = manager.rejoinRoom(room.roomCode, bobToken!, 'sock-bob-rejoin');
+      expect(rejoinResult.success).toBe(true);
+      expect(rejoinResult.room?.players.find((p) => p.id === bobId)?.isConnected).toBe(true);
+      expect(bobInRoom.isConnected).toBe(true);
+      expect(bobInRoom.isBotControlled).toBe(false);
+
+      // Verify the hand is identical in count, cards, and exact order
+      expect(rejoinResult.gameState?.hand).toEqual(bobInitialHand);
+    });
+
+    test('disconnect over 60 seconds triggers the bot, rejoin reclaims the seat', () => {
+      const { room, playerId: aliceId } = manager.createRoom('Alice', { maxPlayers: 2 }, 'sock-1');
+      const { playerId: bobId, reconnectToken: bobToken } = manager.joinRoom(room.roomCode, 'Bob', 'sock-2');
+      manager.startGame(room.roomCode, aliceId);
+
+      const activeRoom = manager.getRoom(room.roomCode)!;
+      const bobInitialHand = [...activeRoom.engineState!.players.find((p) => p.id === bobId)!.hand];
+
+      // Bob disconnects
+      manager.handleDisconnect('sock-2');
+
+      // Grace period expires (30s) -> marked offline
+      manager.handleGraceTimeout(room.roomCode, bobId!);
+      const bobInRoom = activeRoom.players.find((p) => p.id === bobId)!;
+      expect(bobInRoom.isConnected).toBe(false);
+      expect(bobInRoom.isBotControlled).toBe(false);
+
+      // 60 seconds timeout fires -> bot takes over seat
+      manager.handleDisconnectTimeout(room.roomCode, bobId!);
+      expect(bobInRoom.isConnected).toBe(false);
+      expect(bobInRoom.isBotControlled).toBe(true);
+
+      // Bob returns and rejoins: reclaims seat from bot
+      const rejoinResult = manager.rejoinRoom(room.roomCode, bobToken!, 'sock-bob-reclaim');
+      expect(rejoinResult.success).toBe(true);
+      expect(bobInRoom.isConnected).toBe(true);
+      expect(bobInRoom.isBotControlled).toBe(false); // Bot relinquished seat
+      const bobHandAfterBot = activeRoom.engineState!.players.find((p) => p.id === bobId)!.hand;
+      expect(rejoinResult.gameState?.hand).toEqual(bobHandAfterBot); // Hand preserved in same order
+    });
+
+    test('duplicate rejoin events do not create duplicate players', () => {
+      const { room, playerId: aliceId } = manager.createRoom('Alice', { maxPlayers: 2 }, 'sock-1');
+      const { playerId: bobId, reconnectToken: bobToken } = manager.joinRoom(room.roomCode, 'Bob', 'sock-2');
+      manager.startGame(room.roomCode, aliceId);
+
+      const activeRoom = manager.getRoom(room.roomCode)!;
+      expect(activeRoom.players).toHaveLength(2);
+
+      // Simulate multiple / rapid rejoin events (e.g. socket auto-reconnect + foreground trigger)
+      const rejoin1 = manager.rejoinRoom(room.roomCode, bobToken!, 'sock-bob-1');
+      const rejoin2 = manager.rejoinRoom(room.roomCode, bobToken!, 'sock-bob-2');
+      const rejoin3 = manager.rejoinRoom(room.roomCode, bobToken!, 'sock-bob-3');
+
+      expect(rejoin1.success).toBe(true);
+      expect(rejoin2.success).toBe(true);
+      expect(rejoin3.success).toBe(true);
+
+      // Room player count must remain strictly 2 (no duplicates!)
+      expect(activeRoom.players).toHaveLength(2);
+      const bobSeats = activeRoom.players.filter((p) => p.id === bobId);
+      expect(bobSeats).toHaveLength(1);
+      expect(bobSeats[0].isConnected).toBe(true);
     });
   });
 });

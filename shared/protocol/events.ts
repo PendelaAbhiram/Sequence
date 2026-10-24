@@ -120,6 +120,11 @@ export interface ErrorPayload {
   code?: string;
 }
 
+export interface PresenceActivePayload {
+  roomCode: string;
+  playerId: string;
+}
+
 // ── Typed Socket.io Event Interfaces ────────────────────────────────────────
 
 /**
@@ -158,6 +163,7 @@ export interface ClientToServerEvents {
     payload: LeaveRoomPayload,
     callback: (res: LeaveRoomResponse) => void
   ) => void;
+  'presence:active': (payload: PresenceActivePayload) => void;
 }
 
 /**
@@ -169,6 +175,7 @@ export interface ServerToClientEvents {
   gameIncrementalUpdate: (update: GameIncrementalUpdate) => void;
   error: (err: ErrorPayload) => void;
   notification: (payload: { message: string }) => void;
+  heartbeat: (payload: { timestamp: number }) => void;
 }
 
 

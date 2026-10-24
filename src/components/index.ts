@@ -14,4 +14,5 @@ export * from './ReshuffleBanner';
 export * from './ScreenHeader';
 export * from './WakingUpServerView';
 export * from './PlayingCard';
+export * from './RoomCodePill';
 
