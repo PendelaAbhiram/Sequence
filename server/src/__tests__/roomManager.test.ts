@@ -7,6 +7,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { RoomManager } from '../roomManager';
+import { isDeadCard } from '../../../shared/engine';
+
 
 describe('Server RoomManager', () => {
   let manager: RoomManager;
@@ -680,6 +682,87 @@ describe('Server RoomManager', () => {
       expect(rejoin.gameState?.hand).toHaveLength(7);
     });
 
+    test('rejoin returns the identical hand and exact card order without reshuffling', () => {
+      const { room, playerId: aliceId } = manager.createRoom('Alice', { teamCount: 2, maxPlayers: 2 }, 'sock-1');
+      const bobResult = manager.joinRoom(room.roomCode, 'Bob', 'sock-2');
+      const bobId = bobResult.playerId!;
+      const bobToken = bobResult.reconnectToken!;
+
+      manager.startGame(room.roomCode, aliceId);
+
+      // Get Bob's initial hand before disconnect
+      const initialBobState = manager.getPlayerGameState(room.roomCode, bobId)!;
+      const initialHand = [...initialBobState.hand];
+      expect(initialHand.length).toBe(7);
+
+      // Verify initial version is 1
+      expect(initialBobState.version).toBe(1);
+
+      // Bob disconnects briefly
+      manager.handleDisconnect('sock-2');
+
+      // Bob rejoins before grace period expires
+      const rejoin1 = manager.rejoinRoom(room.roomCode, bobToken, 'sock-bob-rejoin-1');
+      expect(rejoin1.success).toBe(true);
+
+      const rejoinedHand1 = rejoin1.gameState!.hand;
+      expect(rejoinedHand1).toHaveLength(initialHand.length);
+
+      // Verify every single card ID, suit, rank, and index order is strictly identical
+      for (let i = 0; i < initialHand.length; i++) {
+        expect(rejoinedHand1[i].id).toBe(initialHand[i].id);
+        expect(rejoinedHand1[i].suit).toBe(initialHand[i].suit);
+        expect(rejoinedHand1[i].rank).toBe(initialHand[i].rank);
+      }
+      expect(rejoinedHand1).toEqual(initialHand);
+
+      // Second brief disconnect and rejoin
+      manager.handleDisconnect('sock-bob-rejoin-1');
+      const rejoin2 = manager.rejoinRoom(room.roomCode, bobToken, 'sock-bob-rejoin-2');
+      expect(rejoin2.success).toBe(true);
+      expect(rejoin2.gameState!.hand).toEqual(initialHand);
+    });
+
+    test('increments version monotonically on every move and sends incremental update', () => {
+      const { room, playerId: aliceId } = manager.createRoom('Alice', { teamCount: 2, maxPlayers: 2 }, 'sock-1');
+      const bobResult = manager.joinRoom(room.roomCode, 'Bob', 'sock-2');
+      manager.startGame(room.roomCode, aliceId);
+
+      const activeRoom = manager.getRoom(room.roomCode)!;
+      expect(activeRoom.version).toBe(1);
+
+      let deltaReceived: any = null;
+      manager.onIncrementalUpdate = (_roomCode, delta) => {
+        deltaReceived = delta;
+      };
+
+      const turnPlayer = activeRoom.engineState!.players[activeRoom.engineState!.currentPlayerIndex];
+      // Find a playable card and target
+      const card = turnPlayer.hand.find((c) => !isDeadCard(activeRoom.engineState!.board, c))!;
+      const targets: [number, number][] = [];
+      for (let r = 0; r < 10; r++) {
+        for (let c = 0; c < 10; c++) {
+          const cell = activeRoom.engineState!.board[r][c];
+          if (cell.card !== 'CORNER' && cell.chip === null) {
+            if (card.rank === 'J' || (cell.card.suit === card.suit && cell.card.rank === card.rank)) {
+              targets.push([r, c]);
+            }
+          }
+        }
+      }
+
+      const res = manager.playMove(room.roomCode, turnPlayer.id, targets[0], card.id);
+      expect(res.success).toBe(true);
+
+      // Version must have incremented monotonically
+      expect(activeRoom.version).toBe(2);
+      expect(deltaReceived).not.toBeNull();
+      expect(deltaReceived.playedCardId).toBe(card.id);
+      expect(deltaReceived.playingPlayerId).toBe(turnPlayer.id);
+      expect(deltaReceived.cell).toEqual(targets[0]);
+    });
+
+
     test('bot automatically takes a turn for a disconnected bot-controlled player', () => {
       const { room, playerId: aliceId } = manager.createRoom('Alice', { teamCount: 2, maxPlayers: 2 }, 'sock-1');
       const bobResult = manager.joinRoom(room.roomCode, 'Bob', 'sock-2');
@@ -722,6 +805,119 @@ describe('Server RoomManager', () => {
       // Resume game
       expect(manager.resumeGame(room.roomCode)).toBe(true);
       expect(activeRoom.isPaused).toBe(false);
+    });
+  });
+
+  // ── 11. LEAVE ROOM (IN LOBBY, MID-GAME, HOST LEAVING, LAST PLAYER LEAVING) ──
+  describe('leaveRoom lifecycle', () => {
+    test('in lobby: regular non-host player leaves', () => {
+      const { room, playerId: aliceId } = manager.createRoom('Alice', { maxPlayers: 4 }, 'sock-1');
+      const { playerId: bobId } = manager.joinRoom(room.roomCode, 'Bob', 'sock-2');
+
+      const leaveResult = manager.leaveRoom(room.roomCode, bobId!);
+      expect(leaveResult.success).toBe(true);
+      expect(leaveResult.message).toContain('Bob left');
+      expect(leaveResult.room).toBeDefined();
+      expect(leaveResult.room?.players).toHaveLength(1);
+      expect(leaveResult.room?.players[0].name).toBe('Alice');
+      expect(leaveResult.room?.hostId).toBe(aliceId);
+    });
+
+    test('in lobby: host leaves, transferring host to next player', () => {
+      const { room, playerId: aliceId } = manager.createRoom('Alice', { maxPlayers: 4 }, 'sock-1');
+      const { playerId: bobId } = manager.joinRoom(room.roomCode, 'Bob', 'sock-2');
+      manager.joinRoom(room.roomCode, 'Charlie', 'sock-3');
+
+      const leaveResult = manager.leaveRoom(room.roomCode, aliceId);
+      expect(leaveResult.success).toBe(true);
+      expect(leaveResult.message).toContain('Alice left');
+      expect(leaveResult.room?.players).toHaveLength(2);
+      // Bob is now promoted to host
+      expect(leaveResult.room?.hostId).toBe(bobId);
+      expect(leaveResult.room?.players[0].id).toBe(bobId);
+      expect(leaveResult.room?.players[0].isHost).toBe(true);
+      expect(leaveResult.room?.players[0].seat).toBe(0);
+      expect(leaveResult.room?.players[0].teamId).toBe('red');
+    });
+
+    test('in lobby: last player leaving marks room empty and closed', () => {
+      const { room, playerId: aliceId } = manager.createRoom('Alice', { maxPlayers: 2 }, 'sock-1');
+      const leaveResult = manager.leaveRoom(room.roomCode, aliceId);
+      expect(leaveResult.success).toBe(true);
+      expect(leaveResult.closed).toBe(true);
+      expect(leaveResult.room).toBeUndefined();
+
+      const activeRoom = manager.getRoom(room.roomCode);
+      expect(activeRoom?.players).toHaveLength(0);
+      expect(manager.isRoomEmpty(activeRoom!)).toBe(true);
+    });
+
+    test('mid-game: regular player leaves, bot takes over their seat', () => {
+      const { room, playerId: aliceId } = manager.createRoom('Alice', { maxPlayers: 2 }, 'sock-1');
+      const { playerId: bobId } = manager.joinRoom(room.roomCode, 'Bob', 'sock-2');
+      manager.startGame(room.roomCode, aliceId);
+
+      const activeRoom = manager.getRoom(room.roomCode)!;
+      expect(activeRoom.status).toBe('playing');
+
+      const leaveResult = manager.leaveRoom(room.roomCode, bobId!);
+      expect(leaveResult.success).toBe(true);
+      expect(leaveResult.botTookOver).toBe(true);
+      expect(leaveResult.message).toContain('Bob left the match');
+      expect(leaveResult.room?.status).toBe('playing');
+
+      // Bob's seat remains, but is now bot-controlled
+      const bobInRoom = activeRoom.players.find((p) => p.id === bobId)!;
+      expect(bobInRoom.isBotControlled).toBe(true);
+      expect(bobInRoom.isConnected).toBe(false);
+      expect(bobInRoom.socketId).toBeUndefined();
+
+      // Alice is still human and host
+      const aliceInRoom = activeRoom.players.find((p) => p.id === aliceId)!;
+      expect(aliceInRoom.isBotControlled).toBeFalsy();
+      expect(aliceInRoom.isHost).toBe(true);
+    });
+
+    test('mid-game: host leaves, host is transferred to next player and bot takes over', () => {
+      const { room, playerId: aliceId } = manager.createRoom('Alice', { maxPlayers: 2 }, 'sock-1');
+      const { playerId: bobId } = manager.joinRoom(room.roomCode, 'Bob', 'sock-2');
+      manager.startGame(room.roomCode, aliceId);
+
+      const activeRoom = manager.getRoom(room.roomCode)!;
+      expect(activeRoom.status).toBe('playing');
+
+      // Alice (host) leaves mid-game
+      const leaveResult = manager.leaveRoom(room.roomCode, aliceId);
+      expect(leaveResult.success).toBe(true);
+      expect(leaveResult.botTookOver).toBe(true);
+      expect(leaveResult.message).toContain('Alice left the match');
+
+      // Host transferred to Bob
+      expect(activeRoom.hostId).toBe(bobId);
+      const bobInRoom = activeRoom.players.find((p) => p.id === bobId)!;
+      expect(bobInRoom.isHost).toBe(true);
+
+      // Alice is now bot-controlled
+      const aliceInRoom = activeRoom.players.find((p) => p.id === aliceId)!;
+      expect(aliceInRoom.isBotControlled).toBe(true);
+      expect(aliceInRoom.isHost).toBe(false);
+    });
+
+    test('mid-game: last remaining human player leaves, room finishes', () => {
+      const { room, playerId: aliceId } = manager.createRoom('Alice', { maxPlayers: 2 }, 'sock-1');
+      const { playerId: bobId } = manager.joinRoom(room.roomCode, 'Bob', 'sock-2');
+      manager.startGame(room.roomCode, aliceId);
+
+      // Alice leaves first (Bob is still human)
+      manager.leaveRoom(room.roomCode, aliceId);
+
+      // Now Bob (the last human player) leaves
+      const leaveResult = manager.leaveRoom(room.roomCode, bobId!);
+      expect(leaveResult.success).toBe(true);
+      expect(leaveResult.closed).toBe(true);
+
+      const activeRoom = manager.getRoom(room.roomCode)!;
+      expect(activeRoom.status).toBe('finished');
     });
   });
 });

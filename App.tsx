@@ -17,6 +17,7 @@ import {
   TutorialScreen,
   SettingsScreen,
   LobbyScreen,
+  OnlineScreen,
   RootStackParamList,
 } from './src/screens';
 
@@ -51,8 +52,14 @@ export default function App() {
             <Stack.Screen name="Game" component={GameScreen} />
             <Stack.Screen name="Result" component={ResultScreen} />
             <Stack.Screen name="Tutorial" component={TutorialScreen} />
+            <Stack.Screen
+              name="Rules"
+              component={TutorialScreen}
+              initialParams={{ initialTab: 'rules' }}
+            />
             <Stack.Screen name="Settings" component={SettingsScreen} />
             <Stack.Screen name="Lobby" component={LobbyScreen} />
+            <Stack.Screen name="Online" component={OnlineScreen} />
           </Stack.Navigator>
         </NavigationContainer>
       </SafeAreaProvider>

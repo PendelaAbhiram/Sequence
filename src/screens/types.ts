@@ -7,9 +7,11 @@ export type RootStackParamList = {
   ModeSelect: undefined;
   Game: undefined;
   Result: undefined;
-  Tutorial: undefined;
+  Tutorial: { initialTab?: 'tutorial' | 'rules' } | undefined;
+  Rules: { initialTab?: 'tutorial' | 'rules' } | undefined;
   Settings: undefined;
   Lobby: undefined;
+  Online: { initialTab?: 'create' | 'join' } | undefined;
 };
 
 export type ScreenProps<T extends keyof RootStackParamList> = NativeStackScreenProps<

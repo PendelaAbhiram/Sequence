@@ -8,3 +8,4 @@ export * from './ResultScreen';
 export * from './TutorialScreen';
 export * from './SettingsScreen';
 export * from './LobbyScreen';
+export * from './OnlineScreen';

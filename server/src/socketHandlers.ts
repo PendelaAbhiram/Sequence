@@ -24,7 +24,7 @@ export type SequenceSocket = Socket<
 >;
 
 /**
- * Broadcasts player-masked game states to all connected players in a room
+ * Broadcasts player-masked game states to all connected players in a room (full resync)
  */
 export function broadcastGameState(io: SequenceServer, roomCode: string) {
   const room = roomManager.getRoom(roomCode);
@@ -40,10 +40,60 @@ export function broadcastGameState(io: SequenceServer, roomCode: string) {
   }
 }
 
+/**
+ * Broadcasts lightweight incremental delta to connected players in a room
+ */
+export function broadcastIncrementalUpdate(
+  io: SequenceServer,
+  roomCode: string,
+  delta: {
+    cell?: [number, number];
+    playedCardId?: string;
+    playingPlayerId?: string;
+    drawnCard?: any;
+    isDeadCardDiscard?: boolean;
+  }
+) {
+  const room = roomManager.getRoom(roomCode);
+  if (!room || !room.engineState) return;
+  const engine = room.engineState;
+  const currentTurnPlayer = engine.players[engine.currentPlayerIndex];
+
+  for (const player of room.players) {
+    if (player.isConnected && player.socketId) {
+      const isMover = player.id === delta.playingPlayerId;
+      io.to(player.socketId).emit('gameIncrementalUpdate', {
+        roomCode,
+        version: room.version,
+        lastMove: engine.lastMove,
+        turnPlayerId: currentTurnPlayer?.id ?? '',
+        currentPlayerIndex: engine.currentPlayerIndex,
+        sequenceCounts: engine.sequenceCounts,
+        sequencesNeeded: room.settings.teamCount === 3 ? 1 : 2,
+        completedSequences: engine.completedSequences,
+        winner: engine.winner,
+        drawPileCount: engine.drawPile.length,
+        reshuffleOccurred: engine.reshuffleOccurred,
+        cell: delta.cell,
+        playedCardId: delta.playedCardId,
+        drawnCard: isMover ? delta.drawnCard : undefined, // Secret: only recipient gets drawn card
+        isDeadCardDiscard: delta.isDeadCardDiscard,
+        isPaused: room.isPaused,
+      });
+    }
+  }
+}
+
 export function registerSocketHandlers(io: SequenceServer) {
   // Wire authoritative state-change callbacks from RoomManager to socket broadcasts
   roomManager.onGameStateChange = (roomCode: string) => {
-    broadcastGameState(io, roomCode);
+    const room = roomManager.getRoom(roomCode);
+    if (room && (room.status === 'finished' || room.isPaused)) {
+      broadcastGameState(io, roomCode);
+    }
+  };
+  roomManager.onIncrementalUpdate = (roomCode: string, delta) => {
+    broadcastIncrementalUpdate(io, roomCode, delta);
   };
   roomManager.onRoomStateChange = (roomCode: string) => {
     const room = roomManager.getRoom(roomCode);
@@ -51,6 +101,7 @@ export function registerSocketHandlers(io: SequenceServer) {
       io.to(`room-${room.roomCode}`).emit('roomUpdated', roomManager.getPublicRoomState(room));
     }
   };
+
 
   io.on('connection', (socket: SequenceSocket) => {
     console.log(`[Socket] Connected: ${socket.id}`);
@@ -156,11 +207,9 @@ export function registerSocketHandlers(io: SequenceServer) {
 
         callback({ success: true });
 
-        // Broadcast updated personalized game states
-        broadcastGameState(io, roomCode);
-
         const room = roomManager.getRoom(roomCode);
         if (room && room.status === 'finished') {
+          broadcastGameState(io, roomCode);
           io.to(`room-${room.roomCode}`).emit('roomUpdated', roomManager.getPublicRoomState(room));
           console.log(`[Game] Finished match in room ${room.roomCode}! Winner: ${room.engineState?.winner}`);
         }
@@ -183,9 +232,9 @@ export function registerSocketHandlers(io: SequenceServer) {
         }
 
         callback({ success: true });
-        broadcastGameState(io, roomCode);
         console.log(`[Game] Player ${playerId} discarded dead card in room ${roomCode}`);
       } catch (err: any) {
+
         const errMsg = err?.message || 'Failed to discard dead card.';
         socket.emit('error', { message: errMsg, code: 'ILLEGAL_DISCARD' });
         callback({ success: false, error: errMsg });
@@ -228,10 +277,15 @@ export function registerSocketHandlers(io: SequenceServer) {
 
         socket.leave(`room-${roomCode}`);
         callback({ success: true });
+
+        const message = result.message || 'A player left the match';
+        io.to(`room-${roomCode}`).emit('notification', { message });
+
         if (result.room) {
           io.to(`room-${roomCode}`).emit('roomUpdated', result.room);
+          broadcastGameState(io, roomCode);
         }
-        console.log(`[Room] Player ${playerId} left room ${roomCode}`);
+        console.log(`[Room] Player ${playerId} left room ${roomCode}: ${message}`);
       } catch (err: any) {
         callback({ success: false, error: err?.message || 'Failed to leave room.' });
       }

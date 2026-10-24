@@ -152,3 +152,61 @@ Run server unit tests only:
 ```bash
 npm run server:test
 ```
+
+---
+
+## ☁️ Render Free Tier Keep-Alive (UptimeRobot Setup)
+
+Render's free tier automatically spins down web services after **15 minutes of inactivity**, causing the next connection to experience a 30–60 second cold-start delay.
+
+The server provides two ultra-lightweight keep-alive endpoints:
+- `GET /health` / `HEAD /health`: Returns JSON with uptime and server health without querying databases or heavy computations.
+- `GET /ping`: Returns plain-text `pong` with `Cache-Control: no-cache`.
+
+### How to Ping with UptimeRobot (100% Free)
+To keep your free Render instance permanently awake without paying for a paid tier:
+
+1. **Sign up for a free UptimeRobot account** at [uptimerobot.com](https://uptimerobot.com) (free tier allows up to 50 monitors).
+2. Click **"+ Add New Monitor"** in the dashboard.
+3. Configure the monitor:
+   - **Monitor Type:** `HTTP(s)` (or `HEAD`)
+   - **Friendly Name:** `Sequence Server Keep-Alive`
+   - **URL (or IP):** `https://<YOUR-APP-NAME>.onrender.com/health`
+   - **Monitoring Interval:** `Every 10 minutes` (must be under 15 minutes to prevent sleep)
+   - **Monitor Timeout:** `30 seconds`
+4. Click **"Create Monitor"**.
+5. UptimeRobot will now ping your server's `/health` endpoint every 10 minutes. Because traffic is received before the 15-minute inactivity window expires, your free Render container **never spins down**.
+
+### In-App Cold-Start Resilience
+If the server does cold-start (e.g. initial deploy or manual restart), the mobile app detects connection delays over **5 seconds** and displays a sleek **"Waking up the server..."** status screen with live elapsed counter, status phases, and a manual **"Retry Connection"** button, automatically navigating back to the lobby once the server responds.
+
+---
+
+## 🃏 Playing Card Design
+
+All cards (hand, board, discard piles, deal animation) use a custom **`<PlayingCard>`** SVG component built with `react-native-svg`. The design draws inspiration from [**"Vector Playing Cards" by Byron Knoll**](https://code.google.com/archive/p/vector-playing-cards/) (public domain).
+
+### Card Component Architecture (`src/components/PlayingCard.tsx`)
+
+| Feature | Implementation |
+|---|---|
+| **Standard card face** | White rounded rect, crisp rank + suit in top-left and rotated bottom-right corners |
+| **Number pips (2–10)** | Traditional pip layouts in the correct positions; bottom-half pips rotated 180° |
+| **Ace** | Large centered suit pip |
+| **Face cards (J, Q, K)** | Ornate illustrated court panels with stylised figures, gold sash dividers, and crown/tiara details |
+| **Two-eyed Jacks** (♦, ♣) | Gold **★ WILD ★** badge overlay |
+| **One-eyed Jacks** (♠, ♥) | Red **✕ REMOVE ✕** badge overlay |
+| **Card back** | Navy & gold ornate pattern with diamond lattice, gold starburst medallion, and filigree corners |
+| **Compact mode** | For board cells < 48px: rank + single large suit pip for crisp readability |
+| **Performance** | `React.memo` wrapper; static SVG paths avoid unnecessary re-renders |
+
+### Card Asset Files (`src/assets/cards/`)
+
+- **`suitPaths.ts`** — SVG path data and canonical colors for ♠ ♥ ♦ ♣ (24×24 coordinate box)
+- **`faceCards.tsx`** — Court card figures (King, Queen, Two-Eyed Jack, One-Eyed Jack) with mirrored upper/lower halves
+- **`cardBack.tsx`** — Ornate navy & gold card back SVG
+
+### Attribution
+
+Playing card court figure designs inspired by the public-domain **"Vector Playing Cards"** set by Byron Knoll. All SVG artwork in this project is custom-drawn vector art.
+

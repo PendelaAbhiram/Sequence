@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { ScreenBackground, GlassPanel, PrimaryButton } from '../components';
+import { ScreenBackground, GlassPanel, PrimaryButton, ScreenHeader } from '../components';
 import { palette, radius, spacing, typography } from '../theme';
 import { ScreenProps } from './types';
 
@@ -10,10 +10,11 @@ export const ModeSelectScreen: React.FC<ScreenProps<'ModeSelect'>> = ({ navigati
   return (
     <ScreenBackground>
       <View style={styles.container}>
-        <View style={styles.header}>
-          <Text style={styles.title}>SELECT MODE</Text>
-          <Text style={styles.subtitle}>Choose your match configuration</Text>
-        </View>
+        <ScreenHeader
+          title="SELECT MODE"
+          subtitle="Choose your match configuration"
+          onBack={() => navigation.navigate('Home')}
+        />
 
         <View style={styles.content}>
           <Text style={styles.sectionHeader}>TEAM FORMAT</Text>

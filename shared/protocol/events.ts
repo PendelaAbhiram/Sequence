@@ -3,7 +3,12 @@
 // Pure TypeScript, shared by App and Server.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import type { RoomState, RoomSettings, PlayerGameState } from './room';
+import type {
+  RoomState,
+  RoomSettings,
+  PlayerGameState,
+  GameIncrementalUpdate,
+} from './room';
 
 // ── Client-to-Server Event Payloads ─────────────────────────────────────────
 
@@ -161,8 +166,11 @@ export interface ClientToServerEvents {
 export interface ServerToClientEvents {
   roomUpdated: (room: RoomUpdatedPayload) => void;
   gameStateUpdated: (gameState: GameStateUpdatedPayload) => void;
+  gameIncrementalUpdate: (update: GameIncrementalUpdate) => void;
   error: (err: ErrorPayload) => void;
+  notification: (payload: { message: string }) => void;
 }
+
 
 /**
  * Socket data attached to each connected socket instance on the server

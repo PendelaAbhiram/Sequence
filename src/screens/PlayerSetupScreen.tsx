@@ -12,7 +12,7 @@ import {
   ScrollView,
 } from 'react-native';
 import * as Haptics from 'expo-haptics';
-import { ScreenBackground, GlassPanel, PrimaryButton } from '../components';
+import { ScreenBackground, GlassPanel, PrimaryButton, ScreenHeader } from '../components';
 import { palette, radius, spacing, typography } from '../theme';
 import { ScreenProps } from './types';
 import { useGameStore } from '../store/gameStore';
@@ -118,17 +118,14 @@ export const PlayerSetupScreen: React.FC<ScreenProps<'PlayerSetup'>> = ({ naviga
         showsVerticalScrollIndicator={false}
       >
         {/* Header */}
-        <View style={styles.header}>
-          <TouchableOpacity
-            style={styles.backButton}
-            onPress={() => navigation.goBack()}
-            activeOpacity={0.7}
-          >
-            <Text style={styles.backButtonText}>‹ Back</Text>
-          </TouchableOpacity>
-          <Text style={styles.title}>PASS & PLAY</Text>
-          <Text style={styles.subtitle}>Setup players and seating</Text>
-        </View>
+        <ScreenHeader
+          title="PASS & PLAY"
+          subtitle="Setup players and seating"
+          onBack={() => {
+            if (navigation.canGoBack()) navigation.goBack();
+            else navigation.navigate('Home');
+          }}
+        />
 
         {/* 1. Player Count Selection */}
         <GlassPanel style={styles.sectionCard}>

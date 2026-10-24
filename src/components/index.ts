@@ -11,3 +11,7 @@ export * from './GameIntroAnimation';
 export * from './SequenceCelebration';
 export * from './TurnBanner';
 export * from './ReshuffleBanner';
+export * from './ScreenHeader';
+export * from './WakingUpServerView';
+export * from './PlayingCard';
+

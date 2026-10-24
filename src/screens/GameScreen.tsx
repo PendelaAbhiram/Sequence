@@ -11,6 +11,8 @@ import {
   TouchableOpacity,
   ScrollView,
   ActivityIndicator,
+  BackHandler,
+  Modal,
 } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import {
@@ -23,12 +25,14 @@ import {
   SequenceCelebration,
   TurnBanner,
   ReshuffleBanner,
+  PrimaryButton,
 } from '../components';
 import { palette, radius, spacing, typography } from '../theme';
 import { useResponsiveLayout } from '../utils';
 import { ScreenProps } from './types';
-import { useGameStore } from '../store/gameStore';
+import { useGameStore, clearBotTimer, GAME_SAVE_STORAGE_KEY } from '../store/gameStore';
 import { useOnlineStore } from '../store/onlineStore';
+import { storage } from '../utils/storage';
 import { isDeadCard } from '../engine/board';
 import { requiredSequences, Sequence } from '../engine/sequenceDetector';
 import { soundManager } from '../utils/audio';
@@ -47,12 +51,16 @@ export const GameScreen: React.FC<ScreenProps<'Game'>> = ({ navigation }) => {
   const onlineSelectCard = useOnlineStore((s) => s.selectCard);
   const onlinePlayMove = useOnlineStore((s) => s.playMove);
   const onlineDiscardDeadCard = useOnlineStore((s) => s.discardDeadCard);
+  const leaveRoom = useOnlineStore((s) => s.leaveRoom);
+  const notificationMessage = useOnlineStore((s) => s.notificationMessage);
+  const clearNotification = useOnlineStore((s) => s.clearNotification);
 
   // ── Local / Bot Store Bindings ──────────────────────────────────────────────
   const game = useGameStore((s) => s.game);
   const selectedCard = useGameStore((s) => s.selectedCard);
   const validTargets = useGameStore((s) => s.validTargets);
   const isBotThinking = useGameStore((s) => s.isBotThinking);
+  const clearSavedGame = useGameStore((s) => s.clearSavedGame);
 
   const selectCard = useGameStore((s) => s.selectCard);
   const playMove = useGameStore((s) => s.playMove);
@@ -68,6 +76,8 @@ export const GameScreen: React.FC<ScreenProps<'Game'>> = ({ navigation }) => {
   const [turnBannerVisible, setTurnBannerVisible] = useState(false);
   const [reshuffleVisible, setReshuffleVisible] = useState(false);
   const [sequenceCelebrationTeam, setSequenceCelebrationTeam] = useState<TeamId | null>(null);
+  const [exitModalVisible, setExitModalVisible] = useState(false);
+  const isLeavingRef = useRef(false);
 
   // Audio toggles
   const [sfxOn, setSfxOn] = useState(soundManager.isSoundEnabled());
@@ -75,25 +85,22 @@ export const GameScreen: React.FC<ScreenProps<'Game'>> = ({ navigation }) => {
 
   // ── Unified Data Derivations ────────────────────────────────────────────────
   const activeBoard = isOnline ? onlineGameState?.board : game?.board;
+
+  // Fixed human player in bot mode (fixed human player id is 'player-0')
+  const humanPlayer = useMemo(() => {
+    if (isOnline || !game || game.settings.mode !== 'bot') return null;
+    return game.players.find((p) => p.id === 'player-0') ?? game.players[0] ?? null;
+  }, [isOnline, game]);
+
+  // Active hand displayed in the bottom hand tray:
+  // - Online: personal secret hand from server
+  // - Bot mode: ALWAYS the fixed human player's hand (never a bot's hand)
+  // - Pass-and-play: current player's hand (revealed after tapping reveal cover)
   const activeHand = isOnline
     ? (onlineGameState?.hand ?? [])
-    : (getCurrentPlayer()?.hand ?? []);
-  const activeSelectedCard = isOnline ? onlineSelectedCard : selectedCard;
-  const activeValidTargets = isOnline ? onlineValidTargets : validTargets;
-  const activeCompletedSequences = isOnline
-    ? (onlineGameState?.completedSequences ?? [])
-    : (game?.completedSequences ?? []);
-  const activeSequenceCounts = isOnline
-    ? (onlineGameState?.sequenceCounts ?? { red: 0, blue: 0, green: 0 })
-    : (game?.sequenceCounts ?? { red: 0, blue: 0, green: 0 });
-  const activeSequencesNeeded = isOnline
-    ? (onlineGameState?.sequencesNeeded ?? 2)
-    : (game ? requiredSequences(game.teams.length) : 2);
-  const activeLastMove = isOnline ? onlineGameState?.lastMove : game?.lastMove;
-  const activeWinner = isOnline ? onlineGameState?.winner : game?.winner;
-  const activeReshuffle = isOnline
-    ? onlineGameState?.reshuffleOccurred
-    : game?.reshuffleOccurred;
+    : (game?.settings.mode === 'bot'
+        ? (humanPlayer?.hand ?? [])
+        : (getCurrentPlayer()?.hand ?? []));
 
   // Turn player derivation
   const onlineTurnPlayer = useMemo(() => {
@@ -122,11 +129,32 @@ export const GameScreen: React.FC<ScreenProps<'Game'>> = ({ navigation }) => {
       : palette.green;
 
   const isMyTurnOnline = isOnline && onlinePlayerId === onlineGameState?.turnPlayerId;
-  const canInteract = isOnline
+  const isHumanTurn = isOnline
     ? isMyTurnOnline
+    : game?.settings.mode === 'bot'
+    ? (game.currentPlayerIndex === 0 && !isBotThinking)
     : (!isBot && !isBotThinking && !passCoverVisible);
 
-  // Unified players for DiscardSheet
+  const canInteract = isHumanTurn;
+
+  const activeSelectedCard = canInteract ? (isOnline ? onlineSelectedCard : selectedCard) : null;
+  const activeValidTargets = canInteract ? (isOnline ? onlineValidTargets : validTargets) : [];
+  const activeCompletedSequences = isOnline
+    ? (onlineGameState?.completedSequences ?? [])
+    : (game?.completedSequences ?? []);
+  const activeSequenceCounts = isOnline
+    ? (onlineGameState?.sequenceCounts ?? { red: 0, blue: 0, green: 0 })
+    : (game?.sequenceCounts ?? { red: 0, blue: 0, green: 0 });
+  const activeSequencesNeeded = isOnline
+    ? (onlineGameState?.sequencesNeeded ?? 2)
+    : (game ? requiredSequences(game.teams.length) : 2);
+  const activeLastMove = isOnline ? onlineGameState?.lastMove : game?.lastMove;
+  const activeWinner = isOnline ? onlineGameState?.winner : game?.winner;
+  const activeReshuffle = isOnline
+    ? onlineGameState?.reshuffleOccurred
+    : game?.reshuffleOccurred;
+
+  // Unified players for DiscardSheet (NEVER pass bot hands to visible components!)
   const playersForDiscard = useMemo(() => {
     if (isOnline && onlineGameState) {
       return onlineGameState.players.map((p) => ({
@@ -139,8 +167,29 @@ export const GameScreen: React.FC<ScreenProps<'Game'>> = ({ navigation }) => {
         isBot: Boolean(p.isBotControlled),
       }));
     }
-    return game?.players ?? [];
-  }, [isOnline, onlineGameState, game?.players]);
+    if (game) {
+      return game.players.map((p, idx) => ({
+        id: p.id,
+        name: p.name,
+        seat: p.seat,
+        teamId: p.teamId,
+        // In bot mode, make sure bot hands are NEVER passed to DiscardSheet!
+        hand: (game.settings.mode === 'bot' && idx > 0) ? [] : p.hand,
+        discardPile: p.discardPile || [],
+        isBot: game.settings.mode === 'bot' ? idx > 0 : false,
+      }));
+    }
+    return [];
+  }, [isOnline, onlineGameState, game]);
+
+  // Sanitized players for GameIntroAnimation (strip bot hands)
+  const playersForIntro = useMemo(() => {
+    if (!game) return [];
+    return game.players.map((p, idx) => ({
+      ...p,
+      hand: (game.settings.mode === 'bot' && idx > 0) ? [] : p.hand,
+    }));
+  }, [game]);
 
   // Track sequence count & last move to fire celebrations and sound effects
   const prevSeqCount = useRef<number>(activeCompletedSequences.length);
@@ -162,6 +211,84 @@ export const GameScreen: React.FC<ScreenProps<'Game'>> = ({ navigation }) => {
       return () => clearTimeout(timer);
     }
   }, [activeWinner, navigation]);
+
+  // ── Exit & Navigation Interception ──────────────────────────────────────────
+  const handleSaveAndExit = async () => {
+    if (isLeavingRef.current) return;
+    isLeavingRef.current = true;
+    setExitModalVisible(false);
+    clearBotTimer();
+    try {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    } catch {}
+    if (game) {
+      await storage.setItem(GAME_SAVE_STORAGE_KEY, JSON.stringify(game));
+    }
+    navigation.navigate('Home');
+  };
+
+  const handleLeaveWithoutSaving = async () => {
+    if (isLeavingRef.current) return;
+    isLeavingRef.current = true;
+    setExitModalVisible(false);
+    clearBotTimer();
+    try {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    } catch {}
+    await clearSavedGame();
+    navigation.navigate('Home');
+  };
+
+  const handleLeaveOnline = async () => {
+    if (isLeavingRef.current) return;
+    isLeavingRef.current = true;
+    setExitModalVisible(false);
+    try {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    } catch {}
+    await leaveRoom();
+    navigation.navigate('Home');
+  };
+
+  // Intercept hardware back button & swipe-back gesture
+  useEffect(() => {
+    const onBackPress = () => {
+      if (isLeavingRef.current || activeWinner) return false;
+      try {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      } catch {}
+      setExitModalVisible(true);
+      return true;
+    };
+
+    const backSub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+
+    const unsubBeforeRemove = navigation.addListener('beforeRemove', (e) => {
+      if (isLeavingRef.current || activeWinner) {
+        return;
+      }
+      e.preventDefault();
+      try {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      } catch {}
+      setExitModalVisible(true);
+    });
+
+    return () => {
+      backSub.remove();
+      unsubBeforeRemove();
+    };
+  }, [navigation, activeWinner]);
+
+  // Auto-dismiss server notification banner after 4 seconds
+  useEffect(() => {
+    if (notificationMessage) {
+      const timer = setTimeout(() => {
+        clearNotification();
+      }, 4000);
+      return () => clearTimeout(timer);
+    }
+  }, [notificationMessage, clearNotification]);
 
   // Pass-and-play privacy cover management (LOCAL ONLY - completely suppressed in online mode)
   useEffect(() => {
@@ -328,40 +455,56 @@ export const GameScreen: React.FC<ScreenProps<'Game'>> = ({ navigation }) => {
   return (
     <ScreenBackground showSuits={false}>
       <View style={styles.screenWrapper}>
-        {/* Reconnecting banner for online mode */}
-        {isOnline && onlineStatus !== 'connected' && (
-          <View style={styles.reconnectBanner}>
-            <ActivityIndicator size="small" color="#F59E0B" />
-            <Text style={styles.reconnectText}>
-              {onlineStatus === 'connecting'
-                ? 'Reconnecting to game...'
-                : 'Connection lost. Auto-reconnecting...'}
-            </Text>
+
+
+        {/* Server Notification Toast (e.g. "{Player} left the match") */}
+        {notificationMessage && (
+          <View style={styles.notificationToast}>
+            <Text style={styles.notificationToastText}>ℹ️ {notificationMessage}</Text>
+            <TouchableOpacity
+              onPress={clearNotification}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Text style={styles.notificationDismiss}>✕</Text>
+            </TouchableOpacity>
           </View>
         )}
 
         {/* Top Navigation & Status Bar */}
         <View style={styles.topBar}>
-          {/* Active Turn Indicator */}
-          <View style={styles.turnBadgeContainer}>
-            <View style={[styles.playerChipCircle, { backgroundColor: activeTeamColor }]}>
-              <Text style={styles.playerChipText}>
-                {isOnline ? (onlineTurnPlayer?.seat ?? 0) + 1 : (currentPlayer?.seat ?? 0) + 1}
-              </Text>
-            </View>
-            <View>
-              <Text style={styles.turnName} numberOfLines={1}>
-                {activePlayerName} {isOnline && isMyTurnOnline ? '(You)' : ''}
-              </Text>
-              <Text style={[styles.teamSubtext, { color: activeTeamColor }]}>
-                {isOnline
-                  ? isMyTurnOnline
-                    ? '🎯 Your Turn'
-                    : `Waiting for ${activePlayerName}...`
-                  : isBotThinking
-                  ? '🤖 Thinking...'
-                  : `Team ${activeTeam.toUpperCase()}`}
-              </Text>
+          <View style={styles.topBarLeft}>
+            {/* Menu / Exit Button */}
+            <TouchableOpacity
+              activeOpacity={0.7}
+              style={styles.exitMenuBtn}
+              onPress={() => setExitModalVisible(true)}
+              accessibilityLabel="Leave match"
+              accessibilityRole="button"
+            >
+              <Text style={styles.exitMenuBtnText}>✕</Text>
+            </TouchableOpacity>
+
+            {/* Active Turn Indicator */}
+            <View style={styles.turnBadgeContainer}>
+              <View style={[styles.playerChipCircle, { backgroundColor: activeTeamColor }]}>
+                <Text style={styles.playerChipText}>
+                  {isOnline ? (onlineTurnPlayer?.seat ?? 0) + 1 : (currentPlayer?.seat ?? 0) + 1}
+                </Text>
+              </View>
+              <View style={styles.turnNameWrapper}>
+                <Text style={styles.turnName} numberOfLines={1}>
+                  {activePlayerName} {isOnline && isMyTurnOnline ? '(You)' : ''}
+                </Text>
+                <Text style={[styles.teamSubtext, { color: activeTeamColor }]}>
+                  {isOnline
+                    ? isMyTurnOnline
+                      ? '🎯 Your Turn'
+                      : `Waiting for ${activePlayerName}...`
+                    : isBotThinking
+                    ? '🤖 Thinking...'
+                    : `Team ${activeTeam.toUpperCase()}`}
+                </Text>
+              </View>
             </View>
           </View>
 
@@ -383,8 +526,12 @@ export const GameScreen: React.FC<ScreenProps<'Game'>> = ({ navigation }) => {
                     },
                   ]}
                 />
+                {onlineStatus !== 'connected' && (
+                  <Text style={styles.reconnectingDotText}>Reconnecting...</Text>
+                )}
               </View>
             )}
+
 
             {/* Audio Toggles */}
             <TouchableOpacity
@@ -441,48 +588,90 @@ export const GameScreen: React.FC<ScreenProps<'Game'>> = ({ navigation }) => {
           </View>
         </View>
 
-        {/* Online Opponents Row: Shows card counts for all other players */}
-        {isOnline && onlineGameState && (
+        {/* Opponents / Players Row (Shows card counts with face-down cards in Bot Mode and Online) */}
+        {((isOnline && onlineGameState) || (!isOnline && game?.settings.mode === 'bot')) && (
           <View style={styles.opponentsRowWrapper}>
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
               contentContainerStyle={styles.opponentsScroll}
             >
-              {onlineGameState.players.map((p) => {
-                const isMe = p.id === onlinePlayerId;
-                const isTurn = p.id === onlineGameState.turnPlayerId;
-                const teamColor =
-                  p.teamId === 'red'
-                    ? palette.red
-                    : p.teamId === 'blue'
-                    ? palette.blue
-                    : palette.green;
+              {isOnline && onlineGameState
+                ? onlineGameState.players.map((p) => {
+                    const isMe = p.id === onlinePlayerId;
+                    const isTurn = p.id === onlineGameState.turnPlayerId;
+                    const teamColor =
+                      p.teamId === 'red'
+                        ? palette.red
+                        : p.teamId === 'blue'
+                        ? palette.blue
+                        : palette.green;
 
-                return (
-                  <View
-                    key={p.id}
-                    style={[
-                      styles.opponentPill,
-                      isTurn && { borderColor: teamColor, backgroundColor: 'rgba(255, 255, 255, 0.12)' },
-                      isMe && styles.myPill,
-                    ]}
-                  >
-                    <View style={[styles.miniSeatDot, { backgroundColor: teamColor }]}>
-                      <Text style={styles.miniSeatText}>{p.seat + 1}</Text>
-                    </View>
-                    <View>
-                      <Text style={styles.opponentPillName} numberOfLines={1}>
-                        {p.name} {isMe ? '(You)' : ''}
-                      </Text>
-                      <Text style={styles.opponentCardCount}>
-                        {isMe ? `${activeHand.length} cards` : `🂠 ${p.cardCount} cards`}
-                        {!p.isConnected && (p.isBotControlled ? ' • 🤖' : ' • ⚪')}
-                      </Text>
-                    </View>
-                  </View>
-                );
-              })}
+                    return (
+                      <View
+                        key={p.id}
+                        style={[
+                          styles.opponentPill,
+                          isTurn && { borderColor: teamColor, backgroundColor: 'rgba(255, 255, 255, 0.12)' },
+                          isMe && styles.myPill,
+                        ]}
+                      >
+                        <View style={[styles.miniSeatDot, { backgroundColor: teamColor }]}>
+                          <Text style={styles.miniSeatText}>{p.seat + 1}</Text>
+                        </View>
+                        <View>
+                          <Text style={styles.opponentPillName} numberOfLines={1}>
+                            {p.name} {isMe ? '(You)' : ''}
+                          </Text>
+                          <Text style={styles.opponentCardCount}>
+                            {isMe ? `${activeHand.length} cards` : `🂠 ${p.cardCount} cards`}
+                            {!p.isConnected && (p.isBotControlled ? ' • 🤖' : ' • ⚪')}
+                          </Text>
+                        </View>
+                      </View>
+                    );
+                  })
+                : game?.players.map((p, idx) => {
+                    const isMe = idx === 0;
+                    const isTurn = idx === game.currentPlayerIndex;
+                    const isCurrentBotThinking = isTurn && !isMe && isBotThinking;
+                    const teamColor =
+                      p.teamId === 'red'
+                        ? palette.red
+                        : p.teamId === 'blue'
+                        ? palette.blue
+                        : palette.green;
+
+                    return (
+                      <View
+                        key={p.id}
+                        style={[
+                          styles.opponentPill,
+                          isTurn && { borderColor: teamColor, backgroundColor: 'rgba(255, 255, 255, 0.14)' },
+                          isMe && styles.myPill,
+                        ]}
+                      >
+                        <View style={[styles.miniSeatDot, { backgroundColor: teamColor }]}>
+                          <Text style={styles.miniSeatText}>{p.seat + 1}</Text>
+                        </View>
+                        <View>
+                          <Text style={styles.opponentPillName} numberOfLines={1}>
+                            {p.name} {isMe ? '(You)' : ''}
+                          </Text>
+                          <Text style={styles.opponentCardCount}>
+                            {isMe
+                              ? `${p.hand.length} cards`
+                              : `🂠 ${p.hand.length} cards`}
+                            {!isMe && isCurrentBotThinking
+                              ? ' • 🤖 Thinking...'
+                              : !isMe
+                              ? ' • 🤖'
+                              : ''}
+                          </Text>
+                        </View>
+                      </View>
+                    );
+                  })}
             </ScrollView>
           </View>
         )}
@@ -512,6 +701,14 @@ export const GameScreen: React.FC<ScreenProps<'Game'>> = ({ navigation }) => {
                 Tap a highlighted board cell to place chip
               </Text>
             ) : isOnline && !isMyTurnOnline ? (
+              <Text style={styles.waitTurnHint}>
+                Waiting for {activePlayerName}'s turn...
+              </Text>
+            ) : !isOnline && game?.settings.mode === 'bot' && isBotThinking ? (
+              <Text style={styles.thinkingHint}>
+                🤖 {activePlayerName} is thinking...
+              </Text>
+            ) : !isOnline && game?.settings.mode === 'bot' && game.currentPlayerIndex > 0 ? (
               <Text style={styles.waitTurnHint}>
                 Waiting for {activePlayerName}'s turn...
               </Text>
@@ -558,7 +755,7 @@ export const GameScreen: React.FC<ScreenProps<'Game'>> = ({ navigation }) => {
       {!isOnline && game && (
         <GameIntroAnimation
           visible={introVisible}
-          players={game.players}
+          players={playersForIntro}
           dealerIndex={game.dealerIndex}
           cutCards={game.cutCards}
           onComplete={() => {
@@ -593,8 +790,8 @@ export const GameScreen: React.FC<ScreenProps<'Game'>> = ({ navigation }) => {
         />
       )}
 
-      {/* Pass-and-Play Privacy Cover for Friends Mode (LOCAL ONLY, never in online mode) */}
-      {!isOnline && (
+      {/* Pass-and-Play Privacy Cover for Friends Mode (LOCAL ONLY, never in bot mode or online mode) */}
+      {!isOnline && game?.settings.mode === 'local' && (
         <PassAndPlayCover
           visible={passCoverVisible && !introVisible}
           playerName={activePlayerName}
@@ -603,6 +800,55 @@ export const GameScreen: React.FC<ScreenProps<'Game'>> = ({ navigation }) => {
           onReveal={() => setPassCoverVisible(false)}
         />
       )}
+
+      {/* Leave Match Confirmation Modal */}
+      <Modal
+        visible={exitModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setExitModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>Leave match?</Text>
+            <Text style={styles.modalSubtitle}>
+              {isOnline
+                ? 'Leaving this match will let an AI bot take over your seat. Other players will be notified.'
+                : 'Do you want to save your match and resume later, or leave and end the game?'}
+            </Text>
+
+            <View style={styles.modalActions}>
+              {!isOnline && (
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  style={[styles.modalBtn, styles.saveExitBtn]}
+                  onPress={handleSaveAndExit}
+                >
+                  <Text style={styles.saveExitBtnText}>💾 Save & Exit</Text>
+                </TouchableOpacity>
+              )}
+
+              <TouchableOpacity
+                activeOpacity={0.85}
+                style={[styles.modalBtn, styles.leaveBtn]}
+                onPress={isOnline ? handleLeaveOnline : handleLeaveWithoutSaving}
+              >
+                <Text style={styles.leaveBtnText}>
+                  {isOnline ? 'Leave Match' : 'Leave without saving'}
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                activeOpacity={0.85}
+                style={[styles.modalBtn, styles.cancelBtn]}
+                onPress={() => setExitModalVisible(false)}
+              >
+                <Text style={styles.cancelBtnText}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </ScreenBackground>
   );
 };
@@ -640,11 +886,61 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(255, 255, 255, 0.1)',
   },
-  turnBadgeContainer: {
+  topBarLeft: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.sm,
-    maxWidth: '40%',
+    flexShrink: 1,
+    marginRight: spacing.xs,
+  },
+  exitMenuBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  exitMenuBtnText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  turnBadgeContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    flexShrink: 1,
+  },
+  turnNameWrapper: {
+    flexShrink: 1,
+  },
+  notificationToast: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: 'rgba(30, 41, 59, 0.95)',
+    borderLeftWidth: 4,
+    borderLeftColor: palette.gold,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    marginHorizontal: spacing.base,
+    marginTop: spacing.xs,
+    borderRadius: radius.sm,
+  },
+  notificationToastText: {
+    ...typography.body,
+    fontSize: 13,
+    color: '#F8FAFC',
+    flex: 1,
+  },
+  notificationDismiss: {
+    color: '#94A3B8',
+    fontSize: 16,
+    paddingLeft: spacing.sm,
+    fontWeight: '700',
   },
   playerChipCircle: {
     width: 32,
@@ -677,6 +973,9 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   networkDotContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
     paddingHorizontal: 4,
     justifyContent: 'center',
   },
@@ -685,6 +984,12 @@ const styles = StyleSheet.create({
     height: 8,
     borderRadius: 4,
   },
+  reconnectingDotText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#F59E0B',
+  },
+
   audioBtn: {
     width: 30,
     height: 30,
@@ -826,6 +1131,12 @@ const styles = StyleSheet.create({
     color: '#94A3B8',
     fontStyle: 'italic',
   },
+  thinkingHint: {
+    ...typography.caption,
+    fontSize: 11,
+    color: palette.gold,
+    fontWeight: '700',
+  },
   fannedCardsContainer: {
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.md,
@@ -842,5 +1153,83 @@ const styles = StyleSheet.create({
   loadingText: {
     ...typography.subtitle,
     color: '#FFFFFF',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.75)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: spacing.xl,
+  },
+  modalCard: {
+    width: '100%',
+    maxWidth: 380,
+    backgroundColor: '#0F172A',
+    borderRadius: radius.lg,
+    padding: spacing.xl,
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.5,
+    shadowRadius: 20,
+    elevation: 10,
+  },
+  modalTitle: {
+    ...typography.h2,
+    fontSize: 20,
+    color: '#FFFFFF',
+    marginBottom: spacing.xs,
+    textAlign: 'center',
+  },
+  modalSubtitle: {
+    ...typography.body,
+    fontSize: 14,
+    color: '#94A3B8',
+    textAlign: 'center',
+    marginBottom: spacing.lg,
+    lineHeight: 20,
+  },
+  modalActions: {
+    width: '100%',
+    gap: spacing.sm,
+  },
+  modalBtn: {
+    height: 48,
+    borderRadius: radius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: spacing.md,
+  },
+  saveExitBtn: {
+    backgroundColor: palette.gold,
+  },
+  saveExitBtnText: {
+    ...typography.button,
+    fontSize: 14,
+    color: '#0F172A',
+    fontWeight: '800',
+  },
+  leaveBtn: {
+    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+    borderWidth: 1.5,
+    borderColor: 'rgba(239, 68, 68, 0.4)',
+  },
+  leaveBtnText: {
+    ...typography.button,
+    fontSize: 14,
+    color: '#FCA5A5',
+    fontWeight: '700',
+  },
+  cancelBtn: {
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  cancelBtnText: {
+    ...typography.button,
+    fontSize: 14,
+    color: '#E2E8F0',
   },
 });

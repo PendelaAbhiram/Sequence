@@ -1,19 +1,27 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// HandCardView – Fanned Playing Card with Lift, Jack Badges, & Dead Card Button
+// HandCardView – Fanned Real Playing Card with Deal Flip & Realistic Lift
 // ─────────────────────────────────────────────────────────────────────────────
 
-import React from 'react';
+import React, { useEffect } from 'react';
 import {
   StyleSheet,
   Text,
   View,
   TouchableOpacity,
+  Platform,
 } from 'react-native';
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withTiming,
+  withSpring,
+} from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
-import { Card, Suit } from '../engine/types';
+import { Card } from '../engine/types';
 import { isTwoEyedJack, isOneEyedJack } from '../engine/deck';
-import { palette, radius, typography } from '../theme';
+import { palette, radius } from '../theme';
 import { useSettingsStore } from '../store/settingsStore';
+import { PlayingCard } from './PlayingCard';
 
 interface HandCardViewProps {
   card: Card;
@@ -25,21 +33,7 @@ interface HandCardViewProps {
   disabled?: boolean;
 }
 
-const SUIT_SYMBOLS: Record<Suit, string> = {
-  spades: '♠',
-  hearts: '♥',
-  diamonds: '♦',
-  clubs: '♣',
-};
-
-const SUIT_COLORS: Record<Suit, string> = {
-  spades: '#1E293B',
-  clubs: '#334155',
-  hearts: '#E5484D',
-  diamonds: '#EA580C',
-};
-
-export const HandCardView: React.FC<HandCardViewProps> = ({
+export const HandCardView: React.FC<HandCardViewProps> = React.memo(({
   card,
   isSelected,
   isDead,
@@ -54,13 +48,41 @@ export const HandCardView: React.FC<HandCardViewProps> = ({
   const cardSizePref = useSettingsStore((s) => s.cardSize);
   const cardDims =
     cardSizePref === 'compact'
-      ? { width: 50, height: 74 }
+      ? { width: 52, height: 74 }
       : cardSizePref === 'large'
-      ? { width: 66, height: 94 }
-      : { width: 58, height: 84 };
+      ? { width: 68, height: 96 }
+      : { width: 60, height: 86 };
 
-  const suitColor = SUIT_COLORS[card.suit];
-  const symbol = SUIT_SYMBOLS[card.suit];
+  // ── Worklet-safe Reanimated Shared Values ──────────────────────────────────
+  const dealProgress = useSharedValue(0);
+  const liftY = useSharedValue(0);
+
+  // Trigger deal flip animation when card mounts or card.id changes
+  useEffect(() => {
+    dealProgress.value = 0;
+    dealProgress.value = withTiming(1, { duration: 380 });
+  }, [card.id, dealProgress]);
+
+  // Smooth spring lift when card is selected or marked dead
+  useEffect(() => {
+    liftY.value = withSpring(isSelected ? -20 : isDead ? -8 : 0, {
+      damping: 15,
+      stiffness: 240,
+    });
+  }, [isSelected, isDead, liftY]);
+
+  const animatedCardStyle = useAnimatedStyle(() => {
+    const rotateYDeg = (1 - dealProgress.value) * 90;
+    return {
+      transform: [
+        { translateY: liftY.value },
+        { rotate: `${rotationDeg}deg` },
+        { perspective: 800 },
+        { rotateY: `${rotateYDeg}deg` },
+        { scale: 0.88 + 0.12 * dealProgress.value },
+      ],
+    };
+  });
 
   const handleCardPress = () => {
     if (disabled) return;
@@ -78,69 +100,44 @@ export const HandCardView: React.FC<HandCardViewProps> = ({
     onDiscardDead?.();
   };
 
+  const jackLabel = isWild ? ', Wild Jack' : isRemove ? ', Remove Jack' : '';
+  const deadLabel = isDead ? ', Dead card' : '';
+  const accessibilityLabel = `${card.rank} of ${card.suit}${jackLabel}${deadLabel}`;
+
   return (
-    <View
+    <Animated.View
       style={[
         styles.cardOuter,
         {
-          width: cardDims.width + 2,
-          height: cardDims.height + 2,
-          transform: [
-            { translateY: isSelected ? -20 : isDead ? -8 : 0 },
-            { rotate: `${rotationDeg}deg` },
-          ],
+          width: cardDims.width + 4,
+          height: cardDims.height + 4,
           zIndex: isSelected ? 99 : 1,
         },
+        animatedCardStyle,
       ]}
     >
       <TouchableOpacity
-        activeOpacity={0.85}
+        activeOpacity={0.88}
         onPress={handleCardPress}
         disabled={disabled}
-        accessibilityLabel={`${card.rank} of ${card.suit}${isWild ? ', Wild Jack' : isRemove ? ', Remove Jack' : ''}${isDead ? ', Dead card' : ''}`}
+        accessibilityLabel={accessibilityLabel}
+        accessibilityRole="button"
         style={[
           styles.cardBody,
           { width: cardDims.width, height: cardDims.height },
           isSelected && styles.cardSelected,
           isDead && styles.cardDead,
+          disabled && styles.cardDisabled,
         ]}
       >
-        {/* Top-Left Rank & Suit */}
-        <View style={styles.cornerIndicator}>
-          <Text style={[styles.cornerRank, { color: suitColor }]}>{card.rank}</Text>
-          <Text style={[styles.cornerSuit, { color: suitColor }]}>{symbol}</Text>
-        </View>
-
-        {/* Center Symbol / Graphic */}
-        <View style={styles.centerGraphic}>
-          <Text style={[styles.largeSymbol, { color: suitColor }]}>{symbol}</Text>
-
-          {/* Jack Badges */}
-          {isWild && (
-            <View style={styles.wildBadge}>
-              <Text style={styles.wildBadgeText}>WILD</Text>
-            </View>
-          )}
-
-          {isRemove && (
-            <View style={styles.removeBadge}>
-              <Text style={styles.removeBadgeText}>REMOVE</Text>
-            </View>
-          )}
-
-          {/* Dead Card Badge */}
-          {isDead && (
-            <View style={styles.deadBadge}>
-              <Text style={styles.deadBadgeText}>DEAD</Text>
-            </View>
-          )}
-        </View>
-
-        {/* Bottom-Right Inverted Rank & Suit */}
-        <View style={[styles.cornerIndicator, styles.cornerBottomRight]}>
-          <Text style={[styles.cornerRank, { color: suitColor }]}>{card.rank}</Text>
-          <Text style={[styles.cornerSuit, { color: suitColor }]}>{symbol}</Text>
-        </View>
+        <PlayingCard
+          rank={card.rank}
+          suit={card.suit}
+          width={cardDims.width}
+          height={cardDims.height}
+          compact={false}
+          isDead={isDead}
+        />
       </TouchableOpacity>
 
       {/* Discard & Draw Action Button for Dead Cards */}
@@ -149,135 +146,101 @@ export const HandCardView: React.FC<HandCardViewProps> = ({
           activeOpacity={0.8}
           onPress={handleDiscardPress}
           style={styles.discardButton}
+          accessibilityLabel="Discard dead card and draw new one"
+          accessibilityRole="button"
         >
           <Text style={styles.discardButtonText}>Discard & Draw</Text>
         </TouchableOpacity>
       )}
-    </View>
+    </Animated.View>
   );
-};
+});
+
+HandCardView.displayName = 'HandCardView';
 
 const styles = StyleSheet.create({
   cardOuter: {
-    width: 60,
-    height: 86,
-    marginHorizontal: -4,
+    marginHorizontal: -5,
     alignItems: 'center',
+    justifyContent: 'center',
   },
   cardBody: {
-    width: 58,
-    height: 84,
     borderRadius: radius.sm,
     backgroundColor: '#FFFFFF',
-    borderWidth: 1.5,
-    borderColor: '#E2E8F0',
-    padding: 3,
-    justifyContent: 'space-between',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.35,
-    shadowRadius: 6,
-    elevation: 6,
-    position: 'relative',
+    borderWidth: 1.2,
+    borderColor: '#CBD5E1',
+    overflow: 'hidden',
+    // Realistic shadow
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.35,
+        shadowRadius: 6,
+      },
+      android: {
+        elevation: 6,
+      },
+      web: {
+        boxShadow: '0 4px 10px rgba(0, 0, 0, 0.35)',
+      },
+    }),
   },
   cardSelected: {
     borderColor: palette.gold,
     borderWidth: 2.5,
-    shadowColor: palette.gold,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.8,
-    shadowRadius: 10,
-    elevation: 12,
+    // Realistic elevated shadow
+    ...Platform.select({
+      ios: {
+        shadowColor: palette.gold,
+        shadowOffset: { width: 0, height: 8 },
+        shadowOpacity: 0.8,
+        shadowRadius: 12,
+      },
+      android: {
+        elevation: 14,
+      },
+      web: {
+        boxShadow: `0 8px 16px ${palette.gold}`,
+      },
+    }),
   },
   cardDead: {
     borderColor: '#EF4444',
     borderWidth: 2,
     backgroundColor: '#FEF2F2',
   },
-  cornerIndicator: {
-    alignItems: 'center',
-    width: 14,
-  },
-  cornerBottomRight: {
-    alignSelf: 'flex-end',
-    transform: [{ rotate: '180deg' }],
-  },
-  cornerRank: {
-    fontSize: 11,
-    fontWeight: '900',
-    lineHeight: 12,
-  },
-  cornerSuit: {
-    fontSize: 10,
-    fontWeight: '900',
-    lineHeight: 11,
-  },
-  centerGraphic: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 1,
-  },
-  largeSymbol: {
-    fontSize: 22,
-    fontWeight: '900',
-  },
-  wildBadge: {
-    backgroundColor: '#F59E0B',
-    paddingHorizontal: 4,
-    paddingVertical: 1,
-    borderRadius: 3,
-    marginTop: -2,
-  },
-  wildBadgeText: {
-    fontSize: 7.5,
-    fontWeight: '900',
-    color: '#0F172A',
-    letterSpacing: 0.5,
-  },
-  removeBadge: {
-    backgroundColor: '#DC2626',
-    paddingHorizontal: 4,
-    paddingVertical: 1,
-    borderRadius: 3,
-    marginTop: -2,
-  },
-  removeBadgeText: {
-    fontSize: 7,
-    fontWeight: '900',
-    color: '#FFFFFF',
-    letterSpacing: 0.5,
-  },
-  deadBadge: {
-    backgroundColor: '#991B1B',
-    paddingHorizontal: 4,
-    paddingVertical: 1,
-    borderRadius: 3,
-    marginTop: -2,
-  },
-  deadBadgeText: {
-    fontSize: 7,
-    fontWeight: '900',
-    color: '#FFFFFF',
+  cardDisabled: {
+    opacity: 0.55,
   },
   discardButton: {
     position: 'absolute',
     bottom: -28,
     backgroundColor: '#B91C1C',
-    paddingHorizontal: 5,
+    paddingHorizontal: 6,
     paddingVertical: 3,
     borderRadius: radius.xs,
     minHeight: 24,
-    minWidth: 70,
+    minWidth: 72,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
     borderColor: '#FFFFFF',
     zIndex: 100,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.4,
+        shadowRadius: 3,
+      },
+      android: {
+        elevation: 6,
+      },
+      web: {
+        boxShadow: '0 2px 6px rgba(0, 0, 0, 0.4)',
+      },
+    }),
   },
   discardButtonText: {
     fontSize: 9,

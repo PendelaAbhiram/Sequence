@@ -26,6 +26,14 @@ export interface ActiveRoomPlayer extends RoomPlayer {
   disconnectedAt?: number;
 }
 
+export interface MoveDelta {
+  cell?: [number, number];
+  playedCardId?: string;
+  playingPlayerId?: string;
+  drawnCard?: Card;
+  isDeadCardDiscard?: boolean;
+}
+
 export interface ActiveRoom {
   roomCode: string;
   hostId: string;
@@ -36,6 +44,7 @@ export interface ActiveRoom {
   lastActiveAt: number;
   engineState: GameEngineState | null;
   isPaused?: boolean;
+  version: number;
 }
 
 export class RoomManager {
@@ -49,7 +58,9 @@ export class RoomManager {
 
   // Callbacks for broadcasting state changes
   public onGameStateChange?: (roomCode: string) => void;
+  public onIncrementalUpdate?: (roomCode: string, delta: MoveDelta) => void;
   public onRoomStateChange?: (roomCode: string) => void;
+
 
   constructor(enableCleanupInterval: boolean = true) {
     if (enableCleanupInterval && typeof setInterval !== 'undefined') {
@@ -142,7 +153,9 @@ export class RoomManager {
       lastActiveAt: now,
       engineState: null,
       isPaused: false,
+      version: 0,
     };
+
 
     this.rooms.set(roomCode, newRoom);
     if (socketId) {
@@ -370,7 +383,9 @@ export class RoomManager {
 
     room.engineState = engineState;
     room.status = 'playing';
+    room.version = 1;
     room.lastActiveAt = Date.now();
+
 
     if (this.onGameStateChange) {
       this.onGameStateChange(roomCode);
@@ -413,6 +428,8 @@ export class RoomManager {
       return { success: false, error: 'It is not your turn to play.' };
     }
 
+    const prevHand = room.engineState.players.find((p) => p.id === playerId)?.hand ?? [];
+
     try {
       const nextState = gameEngineReducer(room.engineState, {
         type: 'PLAY_MOVE',
@@ -420,10 +437,23 @@ export class RoomManager {
         cardId,
       });
 
+      room.version = (room.version || 1) + 1;
       room.engineState = nextState;
       room.lastActiveAt = Date.now();
       if (nextState.phase === 'finished') {
         room.status = 'finished';
+      }
+
+      const nextPlayer = nextState.players.find((p) => p.id === playerId);
+      const drawnCard = nextPlayer?.hand.find((c) => !prevHand.some((ph) => ph.id === c.id));
+
+      if (this.onIncrementalUpdate) {
+        this.onIncrementalUpdate(roomCode, {
+          cell,
+          playedCardId: cardId,
+          playingPlayerId: playerId,
+          drawnCard,
+        });
       }
 
       if (this.onGameStateChange) {
@@ -442,6 +472,7 @@ export class RoomManager {
     } catch (err: any) {
       return { success: false, error: err?.message || 'Illegal move.' };
     }
+
   }
 
   /**
@@ -472,14 +503,29 @@ export class RoomManager {
       return { success: false, error: 'It is not your turn.' };
     }
 
+    const prevHand = room.engineState.players.find((p) => p.id === playerId)?.hand ?? [];
+
     try {
       const nextState = gameEngineReducer(room.engineState, {
         type: 'DISCARD_DEAD_CARD',
         cardId,
       });
 
+      room.version = (room.version || 1) + 1;
       room.engineState = nextState;
       room.lastActiveAt = Date.now();
+
+      const nextPlayer = nextState.players.find((p) => p.id === playerId);
+      const drawnCard = nextPlayer?.hand.find((c) => !prevHand.some((ph) => ph.id === c.id));
+
+      if (this.onIncrementalUpdate) {
+        this.onIncrementalUpdate(roomCode, {
+          playedCardId: cardId,
+          playingPlayerId: playerId,
+          drawnCard,
+          isDeadCardDiscard: true,
+        });
+      }
 
       if (this.onGameStateChange) {
         this.onGameStateChange(roomCode);
@@ -489,6 +535,7 @@ export class RoomManager {
     } catch (err: any) {
       return { success: false, error: err?.message || 'Cannot discard card.' };
     }
+
   }
 
   /**
@@ -631,7 +678,15 @@ export class RoomManager {
   public leaveRoom(
     roomCode: string,
     playerId: string
-  ): { success: boolean; room?: RoomState; error?: string } {
+  ): {
+    success: boolean;
+    room?: RoomState;
+    error?: string;
+    message?: string;
+    leavingPlayerName?: string;
+    closed?: boolean;
+    botTookOver?: boolean;
+  } {
     const code = roomCode.trim().toUpperCase();
     const room = this.rooms.get(code);
     if (!room) return { success: false, error: `Room ${code} does not exist.` };
@@ -640,13 +695,31 @@ export class RoomManager {
     if (idx === -1) return { success: false, error: 'Player not found in room.' };
 
     const leavingPlayer = room.players[idx];
+    const timerKey = `${code}:${playerId}`;
+    const existingTimer = this.disconnectTimers.get(timerKey);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      this.disconnectTimers.delete(timerKey);
+    }
+
     if (leavingPlayer.socketId) {
       this.socketMap.delete(leavingPlayer.socketId);
     }
-    room.players.splice(idx, 1);
-    room.lastActiveAt = Date.now();
 
     if (room.status === 'lobby') {
+      room.players.splice(idx, 1);
+      room.lastActiveAt = Date.now();
+
+      if (room.players.length === 0) {
+        return {
+          success: true,
+          room: undefined,
+          message: `${leavingPlayer.name} left the room`,
+          leavingPlayerName: leavingPlayer.name,
+          closed: true,
+        };
+      }
+
       const teams: TeamId[] =
         room.settings.teamCount === 3 ? ['red', 'blue', 'green'] : ['red', 'blue'];
       room.players.forEach((p, seat) => {
@@ -658,9 +731,66 @@ export class RoomManager {
         room.players[0].isHost = true;
         room.hostId = room.players[0].id;
       }
+
+      return {
+        success: true,
+        room: this.getPublicRoomState(room),
+        message: `${leavingPlayer.name} left the room`,
+        leavingPlayerName: leavingPlayer.name,
+      };
     }
 
-    return { success: true, room: this.getPublicRoomState(room) };
+    // Mid-game / match in progress (room.status === 'playing' or 'finished')
+    leavingPlayer.socketId = undefined;
+    leavingPlayer.isConnected = false;
+    leavingPlayer.isBotControlled = true;
+    room.lastActiveAt = Date.now();
+
+    const otherHumanPlayers = room.players.filter(
+      (p) => p.id !== playerId && !p.isBotControlled && p.isConnected
+    );
+
+    // If no other human players remain in the match, finish/close the room
+    if (otherHumanPlayers.length === 0) {
+      room.status = 'finished';
+      return {
+        success: true,
+        room: undefined,
+        message: `${leavingPlayer.name} left the match`,
+        leavingPlayerName: leavingPlayer.name,
+        closed: true,
+      };
+    }
+
+    // Transfer host if leaving player was host
+    if (room.hostId === playerId) {
+      leavingPlayer.isHost = false;
+      otherHumanPlayers[0].isHost = true;
+      room.hostId = otherHumanPlayers[0].id;
+    }
+
+    if (this.onRoomStateChange) {
+      this.onRoomStateChange(code);
+    }
+    if (this.onGameStateChange) {
+      this.onGameStateChange(code);
+    }
+
+    // If it is currently this player's turn, execute bot turn immediately
+    if (
+      room.engineState &&
+      room.engineState.players[room.engineState.currentPlayerIndex]?.id === playerId
+    ) {
+      this.playBotTurn(code, playerId);
+    }
+
+    return {
+      success: true,
+      room: this.getPublicRoomState(room),
+      message: `${leavingPlayer.name} left the match`,
+      leavingPlayerName: leavingPlayer.name,
+      botTookOver: true,
+    };
   }
 
   /**
@@ -841,8 +971,10 @@ export class RoomManager {
 
     return {
       roomCode: code,
+      version: room.version ?? 1,
       phase: engine.phase === 'finished' ? 'finished' : 'playing',
       board: engine.board,
+
       currentPlayerIndex: engine.currentPlayerIndex,
       turnPlayerId: currentTurnPlayer?.id ?? '',
       hand, // Only authorized player's cards

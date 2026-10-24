@@ -2,13 +2,14 @@
 // Sequence – 4-Slide Interactive Tutorial & Official Rules Screen
 // ─────────────────────────────────────────────────────────────────────────────
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   StyleSheet,
   Text,
   View,
   ScrollView,
   TouchableOpacity,
+  BackHandler,
 } from 'react-native';
 import Animated, {
   FadeIn,
@@ -17,13 +18,30 @@ import Animated, {
   SlideOutLeft,
 } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
-import { ScreenBackground, GlassPanel, PrimaryButton } from '../components';
+import { ScreenBackground, GlassPanel, PrimaryButton, ScreenHeader } from '../components';
 import { palette, radius, spacing, typography } from '../theme';
 import { ScreenProps } from './types';
 
-export const TutorialScreen: React.FC<ScreenProps<'Tutorial'>> = ({ navigation }) => {
-  const [tab, setTab] = useState<'tutorial' | 'rules'>('tutorial');
+export const TutorialScreen: React.FC<ScreenProps<'Tutorial'> | ScreenProps<'Rules'>> = ({ route, navigation }) => {
+  const initialTab = (route?.params as any)?.initialTab || 'tutorial';
+  const [tab, setTab] = useState<'tutorial' | 'rules'>(initialTab);
   const [currentSlide, setCurrentSlide] = useState(0);
+
+  useEffect(() => {
+    const onBackPress = () => {
+      navigation.navigate('Home');
+      return true;
+    };
+    const sub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+    return () => sub.remove();
+  }, [navigation]);
+
+  const handleSkip = () => {
+    try {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    } catch {}
+    navigation.navigate('Home');
+  };
 
   // 4 Interactive Slides
   const slides = [
@@ -122,7 +140,7 @@ export const TutorialScreen: React.FC<ScreenProps<'Tutorial'>> = ({ navigation }
     if (currentSlide < slides.length - 1) {
       setCurrentSlide(currentSlide + 1);
     } else {
-      navigation.navigate('ModeSelect');
+      navigation.navigate('Home');
     }
   };
 
@@ -140,9 +158,25 @@ export const TutorialScreen: React.FC<ScreenProps<'Tutorial'>> = ({ navigation }
   return (
     <ScreenBackground>
       <ScrollView contentContainerStyle={styles.scrollContainer} showsVerticalScrollIndicator={false}>
-        {/* Header with Segmented Tab Selector */}
-        <View style={styles.header}>
-          <Text style={styles.title}>HOW TO PLAY</Text>
+        {/* Header with Consistent Back & Skip Action */}
+        <ScreenHeader
+          title="HOW TO PLAY"
+          subtitle={tab === 'tutorial' ? '4-Slide Interactive Tutorial' : 'Official Sequence Rules'}
+          onBack={() => navigation.navigate('Home')}
+          rightAction={
+            <TouchableOpacity
+              onPress={handleSkip}
+              activeOpacity={0.7}
+              style={styles.skipBtn}
+              accessibilityRole="button"
+              accessibilityLabel="Skip to home"
+            >
+              <Text style={styles.skipBtnText}>Skip ✕</Text>
+            </TouchableOpacity>
+          }
+        />
+
+        <View style={styles.headerTabsWrapper}>
           <View style={styles.segmentedContainer}>
             <TouchableOpacity
               activeOpacity={0.8}
@@ -229,7 +263,7 @@ export const TutorialScreen: React.FC<ScreenProps<'Tutorial'>> = ({ navigation }
                 style={styles.nextButton}
               >
                 <Text style={styles.nextButtonText}>
-                  {currentSlide === slides.length - 1 ? 'Start Playing! ❯' : 'Next ❯'}
+                  {currentSlide === slides.length - 1 ? 'Done & Home ❯' : 'Next ❯'}
                 </Text>
               </TouchableOpacity>
             </View>
@@ -271,9 +305,9 @@ export const TutorialScreen: React.FC<ScreenProps<'Tutorial'>> = ({ navigation }
             </GlassPanel>
 
             <PrimaryButton
-              title="Let's Play Sequence"
+              title="Done (Return to Home)"
               variant="gold"
-              onPress={() => navigation.navigate('ModeSelect')}
+              onPress={() => navigation.navigate('Home')}
             />
           </View>
         )}
@@ -290,17 +324,23 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: spacing.md,
   },
-  header: {
+  headerTabsWrapper: {
     width: '100%',
     maxWidth: 420,
-    alignItems: 'center',
-    gap: spacing.sm,
+    marginBottom: spacing.xs,
   },
-  title: {
-    ...typography.h2,
-    color: '#FFFFFF',
-    letterSpacing: 2,
-    textAlign: 'center',
+  skipBtn: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    borderRadius: radius.full,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
+  },
+  skipBtnText: {
+    ...typography.caption,
+    color: palette.gold,
+    fontWeight: '800',
   },
   segmentedContainer: {
     flexDirection: 'row',

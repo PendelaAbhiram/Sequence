@@ -20,6 +20,7 @@ import { Card, Suit } from '../engine/types';
 import { PlayerState } from '../engine/gameReducer';
 import { palette, radius, spacing, typography } from '../theme';
 import { soundManager } from '../utils/audio';
+import { PlayingCard } from './PlayingCard';
 
 interface GameIntroAnimationProps {
   visible: boolean;
@@ -133,26 +134,15 @@ export const GameIntroAnimation: React.FC<GameIntroAnimationProps> = ({
                   >
                     <View style={styles.cutCardBody}>
                       {card ? (
-                        <>
-                          <Text
-                            style={[
-                              styles.cutCardRank,
-                              { color: SUIT_COLORS[card.suit] },
-                            ]}
-                          >
-                            {card.rank}
-                          </Text>
-                          <Text
-                            style={[
-                              styles.cutCardSuit,
-                              { color: SUIT_COLORS[card.suit] },
-                            ]}
-                          >
-                            {SUIT_SYMBOLS[card.suit]}
-                          </Text>
-                        </>
+                        <PlayingCard
+                          rank={card.rank}
+                          suit={card.suit}
+                          width={48}
+                          height={68}
+                          compact={false}
+                        />
                       ) : (
-                        <Text style={styles.cutCardBack}>🂠</Text>
+                        <PlayingCard isBack width={48} height={68} />
                       )}
                     </View>
                     <Text style={styles.playerNameText} numberOfLines={1}>
@@ -192,7 +182,7 @@ export const GameIntroAnimation: React.FC<GameIntroAnimationProps> = ({
                     },
                   ]}
                 >
-                  <Text style={styles.stackPattern}>🂠</Text>
+                  <PlayingCard isBack width={58} height={82} />
                 </View>
               ))}
             </View>

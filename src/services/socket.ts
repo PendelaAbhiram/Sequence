@@ -23,8 +23,10 @@ export function getSocket(): TypedSocket {
       reconnectionAttempts: Infinity,
       reconnectionDelay: 1000,
       reconnectionDelayMax: 5000,
+      randomizationFactor: 0.5,
       timeout: 10000,
     });
+
   }
   return socket;
 }
@@ -42,3 +44,11 @@ export function disconnectSocket(): void {
     socket.disconnect();
   }
 }
+
+export function reconnectSocket(): TypedSocket {
+  const s = getSocket();
+  s.disconnect();
+  s.connect();
+  return s;
+}
+

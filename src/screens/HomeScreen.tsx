@@ -2,7 +2,8 @@
 // Sequence – Home Screen (Premium Design with Animated Logo & Large Cards)
 // ─────────────────────────────────────────────────────────────────────────────
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   StyleSheet,
   Text,
@@ -30,6 +31,12 @@ export const HomeScreen: React.FC<ScreenProps<'Home'>> = ({ navigation }) => {
   const hasSavedGame = useGameStore((s) => s.hasSavedGame);
   const resumeGame = useGameStore((s) => s.resumeGame);
   const checkSavedGame = useGameStore((s) => s.checkSavedGame);
+
+  useFocusEffect(
+    useCallback(() => {
+      checkSavedGame();
+    }, [checkSavedGame])
+  );
 
   const createRoom = useOnlineStore((s) => s.createRoom);
   const joinRoom = useOnlineStore((s) => s.joinRoom);
@@ -111,9 +118,7 @@ export const HomeScreen: React.FC<ScreenProps<'Home'>> = ({ navigation }) => {
     try {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     } catch {}
-    setOnlineTab(tab);
-    setOnlineError(null);
-    setOnlineModalVisible(true);
+    navigation.navigate('Online', { initialTab: tab });
   };
 
   const handleCreateRoom = async () => {

@@ -19,14 +19,17 @@ const rawCorsOrigin = process.env.CORS_ORIGIN || process.env.ALLOWED_ORIGINS || 
 const corsOrigin =
   rawCorsOrigin === '*'
     ? '*'
-    : rawCorsOrigin.split(',').map((origin) => origin.trim());
+    : rawCorsOrigin.split(',').map((origin: string) => origin.trim());
+
 
 const app = express();
 app.use(cors({ origin: corsOrigin, credentials: true }));
 app.use(express.json());
 
-// ── Health-Check Endpoint ───────────────────────────────────────────────────
+// ── Health-Check & Keep-Alive Endpoints ─────────────────────────────────────
+// Lightweight keep-alive for Render free tier (UptimeRobot ping every 10 mins)
 app.get('/health', (req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.status(200).json({
     status: 'ok',
     uptime: Math.floor(process.uptime()),
@@ -36,6 +39,19 @@ app.get('/health', (req: Request, res: Response) => {
     service: 'Sequence Multiplayer Game Server',
   });
 });
+
+// Fast HEAD endpoint for zero-byte keep-alive pings
+app.head('/health', (req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.status(200).end();
+});
+
+// Ultra-lightweight plain-text ping endpoint
+app.get('/ping', (req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.status(200).send('pong');
+});
+
 
 app.get('/', (req: Request, res: Response) => {
   res.status(200).send(`
@@ -66,8 +82,9 @@ const io = new Server<
     credentials: true,
   },
   pingInterval: 10000,
-  pingTimeout: 5000,
+  pingTimeout: 20000,
 });
+
 
 registerSocketHandlers(io);
 

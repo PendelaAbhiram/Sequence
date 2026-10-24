@@ -49,6 +49,7 @@ export interface GameStore {
 
   // ── Getters ────────────────────────────────────────────────────────────────
   getCurrentPlayer: () => GameEngineState['players'][0] | null;
+  getHumanPlayer: () => GameEngineState['players'][0] | null;
   getDeadCardsInHand: () => Card[];
   isCurrentPlayerBot: () => boolean;
 }
@@ -85,6 +86,11 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const { game } = get();
     if (!game || !cardId) {
       set({ selectedCard: null, validTargets: [] });
+      return;
+    }
+
+    // In bot mode, human cannot select cards while bot is thinking or playing
+    if (game.settings.mode === 'bot' && game.currentPlayerIndex > 0) {
       return;
     }
 
@@ -263,12 +269,21 @@ export const useGameStore = create<GameStore>((set, get) => ({
     return game.players[game.currentPlayerIndex] ?? null;
   },
 
+  getHumanPlayer() {
+    const { game } = get();
+    if (!game || game.players.length === 0) return null;
+    return game.players.find((p) => p.id === 'player-0') ?? game.players[0] ?? null;
+  },
+
   getDeadCardsInHand() {
     const { game } = get();
     if (!game) return [];
-    const currentPlayer = game.players[game.currentPlayerIndex];
-    if (!currentPlayer) return [];
-    return currentPlayer.hand.filter((card) => isDeadCard(game.board, card));
+    const targetPlayer =
+      game.settings.mode === 'bot'
+        ? (game.players.find((p) => p.id === 'player-0') ?? game.players[0])
+        : game.players[game.currentPlayerIndex];
+    if (!targetPlayer) return [];
+    return targetPlayer.hand.filter((card) => isDeadCard(game.board, card));
   },
 
   isCurrentPlayerBot() {

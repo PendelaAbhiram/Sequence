@@ -14,6 +14,7 @@ import {
 import { PlayerState } from '../engine/gameReducer';
 import { Suit } from '../engine/types';
 import { palette, radius, spacing, typography } from '../theme';
+import { PlayingCard } from './PlayingCard';
 
 interface DiscardPileBottomSheetProps {
   visible: boolean;
@@ -126,7 +127,7 @@ export const DiscardPileBottomSheet: React.FC<DiscardPileBottomSheetProps> = ({
           >
             {discards.length === 0 ? (
               <View style={styles.emptyContainer}>
-                <Text style={styles.emptyIcon}>🂠</Text>
+                <PlayingCard isBack width={46} height={64} style={{ opacity: 0.5 }} />
                 <Text style={styles.emptyText}>No cards discarded yet</Text>
                 <Text style={styles.emptySubtext}>
                   Played and dead cards will appear here as the match progresses.
@@ -134,16 +135,11 @@ export const DiscardPileBottomSheet: React.FC<DiscardPileBottomSheetProps> = ({
               </View>
             ) : (
               <View style={styles.cardsGrid}>
-                {discards.map((card, i) => {
-                  const symbol = SUIT_SYMBOLS[card.suit];
-                  const color = SUIT_COLORS[card.suit];
-                  return (
-                    <View key={`${card.id}-${i}`} style={styles.miniCard}>
-                      <Text style={[styles.miniRank, { color }]}>{card.rank}</Text>
-                      <Text style={[styles.miniSuit, { color }]}>{symbol}</Text>
-                    </View>
-                  );
-                })}
+                {discards.map((card, i) => (
+                  <View key={`${card.id}-${i}`} style={styles.miniCard}>
+                    <PlayingCard rank={card.rank} suit={card.suit} width={46} height={64} />
+                  </View>
+                ))}
               </View>
             )}
           </ScrollView>

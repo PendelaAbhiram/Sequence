@@ -11,13 +11,13 @@ import Animated, {
   withTiming,
   withRepeat,
   withSequence,
-  FadeIn,
   FadeOut,
   ZoomIn,
 } from 'react-native-reanimated';
-import { Cell, Suit } from '../engine/types';
+import { Cell } from '../engine/types';
 import { palette } from '../theme';
 import { useSettingsStore } from '../store/settingsStore';
+import { PlayingCard } from './PlayingCard';
 
 interface BoardCellViewProps {
   cell: Cell;
@@ -30,19 +30,6 @@ interface BoardCellViewProps {
   disabled: boolean;
 }
 
-const SUIT_SYMBOLS: Record<Suit, string> = {
-  spades: '♠',
-  hearts: '♥',
-  diamonds: '♦',
-  clubs: '♣',
-};
-
-const SUIT_COLORS: Record<Suit, string> = {
-  spades: '#FFFFFF',
-  clubs: '#CBD5E1',
-  hearts: '#FF4D4F',
-  diamonds: '#FFA940',
-};
 
 export const BoardCellView: React.FC<BoardCellViewProps> = React.memo(({
   cell,
@@ -173,8 +160,6 @@ export const BoardCellView: React.FC<BoardCellViewProps> = React.memo(({
   const card = cell.card;
   const suit = card.suit;
   const rank = card.rank;
-  const suitColor = SUIT_COLORS[suit];
-  const symbol = SUIT_SYMBOLS[suit];
 
   const suitName = suit.charAt(0).toUpperCase() + suit.slice(1);
   const rankName = rank === 'A' ? 'Ace' : rank === 'K' ? 'King' : rank === 'Q' ? 'Queen' : rank;
@@ -196,15 +181,15 @@ export const BoardCellView: React.FC<BoardCellViewProps> = React.memo(({
         isPartOfSequence && styles.sequenceSweepCell,
       ]}
     >
-      {/* Background card face */}
-      <View style={styles.cardFace}>
-        <Text style={[styles.rankText, { color: suitColor, fontSize: Math.max(9, size * 0.3) }]}>
-          {rank}
-        </Text>
-        <Text style={[styles.suitText, { color: suitColor, fontSize: Math.max(10, size * 0.34) }]}>
-          {symbol}
-        </Text>
-      </View>
+      {/* Background card face: Real Playing Card scaled to cell */}
+      <PlayingCard
+        rank={rank}
+        suit={suit}
+        width={size}
+        height={size}
+        compact={size < 48}
+        style={styles.cardFace}
+      />
 
       {/* Chip layer with bounce */}
       {renderChip()}
@@ -231,9 +216,10 @@ export const BoardCellView: React.FC<BoardCellViewProps> = React.memo(({
 
 const styles = StyleSheet.create({
   cellContainer: {
-    backgroundColor: '#0E2232',
+    backgroundColor: '#FFFFFF',
     borderWidth: 0.5,
-    borderColor: 'rgba(255, 255, 255, 0.15)',
+    borderColor: '#E2E8F0',
+    borderRadius: 3,
     alignItems: 'center',
     justifyContent: 'center',
     position: 'relative',
@@ -254,16 +240,8 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
   cardFace: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  rankText: {
-    fontWeight: '900',
-    lineHeight: 12,
-  },
-  suitText: {
-    fontWeight: '900',
-    lineHeight: 14,
+    width: '100%',
+    height: '100%',
   },
   chipBase: {
     position: 'absolute',

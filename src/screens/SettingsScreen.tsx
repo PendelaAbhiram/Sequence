@@ -13,7 +13,7 @@ import {
   Alert,
 } from 'react-native';
 import * as Haptics from 'expo-haptics';
-import { ScreenBackground, GlassPanel, PrimaryButton } from '../components';
+import { ScreenBackground, GlassPanel, PrimaryButton, ScreenHeader } from '../components';
 import { palette, radius, spacing, typography } from '../theme';
 import { ScreenProps } from './types';
 import { useSettingsStore, AppTheme, CardSizePreference, AppLanguage } from '../store/settingsStore';
@@ -68,10 +68,14 @@ export const SettingsScreen: React.FC<ScreenProps<'Settings'>> = ({ navigation }
         contentContainerStyle={styles.scrollContainer}
         showsVerticalScrollIndicator={false}
       >
-        <View style={styles.header}>
-          <Text style={styles.title}>SETTINGS</Text>
-          <Text style={styles.subtitle}>Preferences, Accessibility & Career Stats</Text>
-        </View>
+        <ScreenHeader
+          title="SETTINGS"
+          subtitle="Preferences, Accessibility & Career Stats"
+          onBack={() => {
+            if (navigation.canGoBack()) navigation.goBack();
+            else navigation.navigate('Home');
+          }}
+        />
 
         {/* 1. AUDIO & HAPTICS */}
         <View style={styles.sectionWrapper}>

@@ -3,14 +3,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useEffect, useMemo } from 'react';
-import { StyleSheet, Text, View, ScrollView } from 'react-native';
+import { StyleSheet, Text, View, ScrollView, BackHandler } from 'react-native';
 import Animated, {
   FadeIn,
   FadeInDown,
   ZoomIn,
 } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
-import { ScreenBackground, GlassPanel, PrimaryButton } from '../components';
+import { ScreenBackground, GlassPanel, PrimaryButton, ScreenHeader } from '../components';
 import { palette, radius, spacing, typography } from '../theme';
 import { ScreenProps } from './types';
 import { useGameStore } from '../store/gameStore';
@@ -135,7 +135,11 @@ export const ResultScreen: React.FC<ScreenProps<'Result'>> = ({ navigation }) =>
     navigation.navigate('Game');
   };
 
+  const isLeavingRef = React.useRef(false);
+
   const handleHome = async () => {
+    if (isLeavingRef.current) return;
+    isLeavingRef.current = true;
     if (isOnline) {
       await leaveRoom();
     } else {
@@ -144,12 +148,38 @@ export const ResultScreen: React.FC<ScreenProps<'Result'>> = ({ navigation }) =>
     navigation.navigate('Home');
   };
 
+  useEffect(() => {
+    const onBackPress = () => {
+      handleHome();
+      return true;
+    };
+    const sub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+    const unsub = navigation.addListener('beforeRemove', (e) => {
+      if (isLeavingRef.current) return;
+      e.preventDefault();
+      handleHome();
+    });
+
+    return () => {
+      sub.remove();
+      unsub();
+    };
+  }, [isOnline, navigation]);
+
   return (
     <ScreenBackground>
       <ScrollView
         contentContainerStyle={styles.scrollContainer}
         showsVerticalScrollIndicator={false}
       >
+        {/* Consistent Screen Header */}
+        <ScreenHeader
+          title="VICTORY"
+          subtitle="Match Standings & Career Stats"
+          onBack={handleHome}
+          backLabel="‹ Home"
+        />
+
         {/* Animated Trophy & Winner Announcement */}
         <Animated.View entering={ZoomIn.duration(400)} style={styles.header}>
           <Text style={styles.trophy}>🏆</Text>
@@ -237,7 +267,7 @@ export const ResultScreen: React.FC<ScreenProps<'Result'>> = ({ navigation }) =>
             onPress={handleRematch}
           />
           <PrimaryButton
-            title="Back to Home"
+            title="Home"
             variant="outline"
             onPress={handleHome}
           />

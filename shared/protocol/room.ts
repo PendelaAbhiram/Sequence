@@ -15,7 +15,7 @@ export interface RoomSettings {
 
 export interface RoomPlayer {
   id: string; // Unique persistent player UUID
-  socketId: string; // Transient socket connection ID
+  socketId?: string; // Transient socket connection ID
   name: string;
   teamId: TeamId;
   seat: number;
@@ -53,6 +53,7 @@ export interface PlayerSummary {
 
 export interface PlayerGameState {
   roomCode: string;
+  version: number; // Monotonically increasing state version
   phase: 'playing' | 'finished';
   board: Cell[][];
   currentPlayerIndex: number;
@@ -71,3 +72,24 @@ export interface PlayerGameState {
   cutCards?: Card[];
   isPaused?: boolean;
 }
+
+export interface GameIncrementalUpdate {
+  roomCode: string;
+  version: number; // Monotonically increasing state version
+  lastMove: LastMove | null;
+  turnPlayerId: string;
+  currentPlayerIndex: number;
+  sequenceCounts: Record<TeamId, number>;
+  sequencesNeeded: number;
+  completedSequences: Sequence[];
+  winner: TeamId | null;
+  drawPileCount: number;
+  reshuffleOccurred?: boolean;
+  // Specific move delta details
+  cell?: [number, number];
+  playedCardId?: string;
+  drawnCard?: Card; // Only present for the authorized player who drew it
+  isDeadCardDiscard?: boolean;
+  isPaused?: boolean;
+}
+

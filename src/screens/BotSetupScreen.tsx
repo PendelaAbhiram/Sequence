@@ -12,7 +12,7 @@ import {
   ScrollView,
 } from 'react-native';
 import * as Haptics from 'expo-haptics';
-import { ScreenBackground, GlassPanel, PrimaryButton } from '../components';
+import { ScreenBackground, GlassPanel, PrimaryButton, ScreenHeader } from '../components';
 import { palette, radius, spacing, typography } from '../theme';
 import { ScreenProps } from './types';
 import { useGameStore } from '../store/gameStore';
@@ -81,17 +81,14 @@ export const BotSetupScreen: React.FC<ScreenProps<'BotSetup'>> = ({ navigation }
         showsVerticalScrollIndicator={false}
       >
         {/* Header */}
-        <View style={styles.header}>
-          <TouchableOpacity
-            style={styles.backButton}
-            onPress={() => navigation.goBack()}
-            activeOpacity={0.7}
-          >
-            <Text style={styles.backButtonText}>‹ Back</Text>
-          </TouchableOpacity>
-          <Text style={styles.title}>VS COMPUTER</Text>
-          <Text style={styles.subtitle}>Configure match & AI difficulty</Text>
-        </View>
+        <ScreenHeader
+          title="VS COMPUTER"
+          subtitle="Configure match & AI difficulty"
+          onBack={() => {
+            if (navigation.canGoBack()) navigation.goBack();
+            else navigation.navigate('Home');
+          }}
+        />
 
         {/* Section 1: User Name */}
         <GlassPanel style={styles.sectionCard}>

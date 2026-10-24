@@ -12,16 +12,20 @@ import type {
   RoomState,
   RoomSettings,
   PlayerGameState,
+  GameIncrementalUpdate,
 } from '../../shared/protocol';
 import type { Card, TeamId } from '../engine/types';
 import { isDeadCard } from '../engine/board';
 import { isTwoEyedJack, isOneEyedJack } from '../engine/deck';
 import {
+  storage,
   savePlayerRoomSession,
   getPlayerRoomSession,
   clearPlayerRoomSession,
   PlayerRoomSession,
 } from '../utils/storage';
+
+export const LAST_ACTIVE_ROOM_KEY = 'sequence_last_active_room_code';
 
 export type ConnectionStatus = 'connected' | 'connecting' | 'disconnected';
 
@@ -30,6 +34,8 @@ export interface OnlineStore {
   status: ConnectionStatus;
   serverUrl: string;
   errorMessage: string | null;
+  notificationMessage: string | null;
+  clearNotification: () => void;
 
   // ── Session ───────────────────────────────────────────────────────────────
   isOnline: boolean;
@@ -40,6 +46,7 @@ export interface OnlineStore {
 
   // ── Personalized Game State ───────────────────────────────────────────────
   gameState: PlayerGameState | null;
+  stateVersion: number;
   selectedCard: Card | null;
   validTargets: [number, number][];
 
@@ -61,11 +68,45 @@ export interface OnlineStore {
   leaveRoom: () => Promise<void>;
   rejoinCurrentRoom: () => Promise<boolean>;
   clearError: () => void;
+  retryConnection: () => void;
   resetOnlineState: () => void;
 }
 
+
 let socketInitialized = false;
+let isRejoining = false;
 let appStateSubscription: any = null;
+
+/**
+ * Merges newly received cards with current hand while preserving the exact
+ * visual array order of existing cards. Newly drawn cards are appended to the end.
+ */
+export function mergeHandPreservingOrder(currentHand: Card[], incomingCards: Card[]): Card[] {
+  if (!currentHand || currentHand.length === 0) {
+    return incomingCards;
+  }
+  const incomingMap = new Map(incomingCards.map((c) => [c.id, c]));
+  const preserved: Card[] = [];
+  const keptIds = new Set<string>();
+
+  // 1. Keep existing cards that are still in incomingCards (in identical relative order)
+  for (const card of currentHand) {
+    if (incomingMap.has(card.id)) {
+      preserved.push(incomingMap.get(card.id)!);
+      keptIds.add(card.id);
+    }
+  }
+
+  // 2. Append newly drawn cards strictly at the end
+  for (const card of incomingCards) {
+    if (!keptIds.has(card.id)) {
+      preserved.push(card);
+    }
+  }
+
+  return preserved;
+}
+
 
 function calculateValidTargets(
   board: PlayerGameState['board'],
@@ -127,6 +168,11 @@ export const useOnlineStore = create<OnlineStore>((set, get) => ({
   status: 'disconnected',
   serverUrl: SERVER_URL,
   errorMessage: null,
+  notificationMessage: null,
+
+  clearNotification() {
+    set({ notificationMessage: null });
+  },
 
   isOnline: false,
   room: null,
@@ -135,6 +181,7 @@ export const useOnlineStore = create<OnlineStore>((set, get) => ({
   playerName: 'Player',
 
   gameState: null,
+  stateVersion: 0,
   selectedCard: null,
   validTargets: [],
 
@@ -142,7 +189,15 @@ export const useOnlineStore = create<OnlineStore>((set, get) => ({
     set({ errorMessage: null });
   },
 
+  retryConnection() {
+    set({ status: 'connecting', errorMessage: null });
+    const socket = getSocket();
+    socket.disconnect();
+    socket.connect();
+  },
+
   initSocket() {
+
     if (socketInitialized) return;
     socketInitialized = true;
 
@@ -178,19 +233,120 @@ export const useOnlineStore = create<OnlineStore>((set, get) => ({
       set({ room: updatedRoom });
     });
 
+    socket.on('notification', ({ message }) => {
+      set({ notificationMessage: message });
+    });
+
     socket.on('gameStateUpdated', (newGameState) => {
-      const { selectedCard, playerId } = get();
+      const { stateVersion, selectedCard, playerId, gameState: currentGameState } = get();
+
+      // Drop stale or out-of-order state updates
+      if (newGameState.version && newGameState.version <= stateVersion) {
+        return;
+      }
+
       const meInRoom = newGameState.players.find((p) => p.id === playerId);
       const myTeam = meInRoom?.teamId ?? 'red';
 
+      // Stable hand order: retain existing visual slot order, append new cards at the end
+      const currentHand = currentGameState?.hand ?? [];
+      const stableHand = mergeHandPreservingOrder(currentHand, newGameState.hand);
+
+      const stableGameState: PlayerGameState = {
+        ...newGameState,
+        hand: stableHand,
+      };
+
       // Re-calculate valid targets if a card is currently selected
       let updatedTargets: [number, number][] = [];
-      if (selectedCard && newGameState.board) {
-        updatedTargets = calculateValidTargets(newGameState.board, selectedCard, myTeam);
+      if (selectedCard && stableGameState.board) {
+        const stillInHand = stableHand.find((c) => c.id === selectedCard.id);
+        if (stillInHand) {
+          updatedTargets = calculateValidTargets(stableGameState.board, stillInHand, myTeam);
+        }
       }
 
       set({
-        gameState: newGameState,
+        gameState: stableGameState,
+        stateVersion: newGameState.version ?? (stateVersion + 1),
+        selectedCard: updatedTargets.length > 0 ? selectedCard : null,
+        validTargets: updatedTargets,
+      });
+    });
+
+    socket.on('gameIncrementalUpdate', (update) => {
+      const { stateVersion, gameState: currentGameState, playerId, selectedCard } = get();
+
+      // Ignore stale updates
+      if (update.version <= stateVersion) {
+        return;
+      }
+
+      // If missing full state or version gap detected (e.g. packet loss), trigger full resync
+      if (!currentGameState || update.version > stateVersion + 1) {
+        get().rejoinCurrentRoom();
+        return;
+      }
+
+      // Clone board
+      const newBoard = currentGameState.board.map((row) => row.map((cell) => ({ ...cell })));
+
+      // Apply cell change if present
+      if (update.cell && update.lastMove) {
+        const [r, c] = update.cell;
+        if (update.lastMove.type === 'remove') {
+          newBoard[r][c].chip = null;
+        } else if (update.lastMove.teamId) {
+          newBoard[r][c].chip = update.lastMove.teamId;
+        }
+      }
+
+
+      // Update hand:
+      // If playedCardId is present, ensure it is removed
+      let newHand = currentGameState.hand;
+      if (update.playedCardId && update.lastMove?.playerId === playerId) {
+        newHand = newHand.filter((c) => c.id !== update.playedCardId);
+      }
+      // If drawnCard is provided for this player, append strictly at the end
+      if (update.drawnCard && !newHand.some((c) => c.id === update.drawnCard!.id)) {
+        newHand = [...newHand, update.drawnCard];
+      }
+
+      const meInRoom = currentGameState.players.find((p) => p.id === playerId);
+      const myTeam = meInRoom?.teamId ?? 'red';
+
+      const nextGameState: PlayerGameState = {
+        ...currentGameState,
+        version: update.version,
+        board: newBoard,
+        hand: newHand,
+        currentPlayerIndex: update.currentPlayerIndex,
+        turnPlayerId: update.turnPlayerId,
+        sequenceCounts: update.sequenceCounts,
+        sequencesNeeded: update.sequencesNeeded,
+        completedSequences: update.completedSequences,
+        lastMove: update.lastMove,
+        winner: update.winner,
+        drawPileCount: update.drawPileCount,
+        reshuffleOccurred: update.reshuffleOccurred,
+        phase: update.winner ? 'finished' : currentGameState.phase,
+        isPaused: update.isPaused,
+      };
+
+      // Re-calculate targets if a card is selected
+      let updatedTargets: [number, number][] = [];
+      if (selectedCard) {
+        const stillInHand = newHand.find((c) => c.id === selectedCard.id);
+        if (stillInHand) {
+          updatedTargets = calculateValidTargets(newBoard, stillInHand, myTeam);
+        }
+      }
+
+      set({
+        gameState: nextGameState,
+        stateVersion: update.version,
+        selectedCard: updatedTargets.length > 0 ? selectedCard : null,
         validTargets: updatedTargets,
       });
     });
@@ -201,12 +357,30 @@ export const useOnlineStore = create<OnlineStore>((set, get) => ({
 
     // Auto-rejoin when the app returns to the foreground
     if (!appStateSubscription && typeof AppState !== 'undefined') {
-      appStateSubscription = AppState.addEventListener('change', (nextAppState: AppStateStatus) => {
+      appStateSubscription = AppState.addEventListener('change', async (nextAppState: AppStateStatus) => {
         if (nextAppState === 'active') {
-          const { isOnline, status } = get();
-          if (isOnline) {
-            connectSocket();
-            get().rejoinCurrentRoom();
+          const { isOnline, room } = get();
+          if (isOnline && room) {
+            const socket = connectSocket();
+            if (socket.connected) {
+              get().rejoinCurrentRoom();
+            }
+          } else if (!room) {
+            const lastCode = await storage.getItem(LAST_ACTIVE_ROOM_KEY);
+            if (lastCode) {
+              const session = await getPlayerRoomSession(lastCode);
+              if (session && session.reconnectToken) {
+                set({
+                  isOnline: true,
+                  playerId: session.playerId,
+                  reconnectToken: session.reconnectToken,
+                  playerName: session.playerName,
+                  room: { roomCode: session.roomCode } as any,
+                });
+                connectSocket();
+                get().rejoinCurrentRoom();
+              }
+            }
           }
         }
       });
@@ -215,6 +389,7 @@ export const useOnlineStore = create<OnlineStore>((set, get) => ({
     // Connect socket
     connectSocket();
   },
+
 
   async createRoom(playerName: string, customSettings?: Partial<RoomSettings>) {
     get().initSocket();
@@ -258,6 +433,7 @@ export const useOnlineStore = create<OnlineStore>((set, get) => ({
             teamId: 'red',
             savedAt: Date.now(),
           });
+          await storage.setItem(LAST_ACTIVE_ROOM_KEY, room.roomCode);
         }
 
         resolve({ success: true, room });
@@ -316,6 +492,7 @@ export const useOnlineStore = create<OnlineStore>((set, get) => ({
               teamId: playerObj?.teamId,
               savedAt: Date.now(),
             });
+            await storage.setItem(LAST_ACTIVE_ROOM_KEY, code);
           }
 
           resolve({ success: true, room });
@@ -323,6 +500,7 @@ export const useOnlineStore = create<OnlineStore>((set, get) => ({
       );
     });
   },
+
 
   async setTeamCount(teamCount: 2 | 3) {
     const { room, playerId } = get();
@@ -391,7 +569,7 @@ export const useOnlineStore = create<OnlineStore>((set, get) => ({
   },
 
   async playMove(cell: [number, number], cardId?: string) {
-    const { room, playerId, selectedCard } = get();
+    const { room, playerId, selectedCard, gameState } = get();
     if (!room || !playerId) {
       return { success: false, error: 'No active online match.' };
     }
@@ -399,6 +577,40 @@ export const useOnlineStore = create<OnlineStore>((set, get) => ({
     const targetCardId = cardId ?? selectedCard?.id;
     if (!targetCardId) {
       return { success: false, error: 'No card selected.' };
+    }
+
+    const me = gameState?.players.find((p) => p.id === playerId);
+    const myTeam = me?.teamId ?? 'red';
+
+    // 1. Snapshot state for instant rollback if server rejects move
+    const backupGameState = gameState;
+    const backupSelectedCard = selectedCard;
+    const backupTargets = get().validTargets;
+
+    // 2. Optimistic UI: immediately place chip on client board and remove card from hand
+    if (gameState) {
+      const cardObj = gameState.hand.find((c) => c.id === targetCardId);
+      const newBoard = gameState.board.map((row) => row.map((cellObj) => ({ ...cellObj })));
+      const [r, c] = cell;
+      if (cardObj) {
+        if (isOneEyedJack(cardObj)) {
+          newBoard[r][c].chip = null;
+        } else {
+          newBoard[r][c].chip = myTeam;
+        }
+      }
+      const newHand = gameState.hand.filter((c) => c.id !== targetCardId);
+
+      set({
+        gameState: {
+          ...gameState,
+          board: newBoard,
+          hand: newHand,
+        },
+        selectedCard: null,
+        validTargets: [],
+        errorMessage: null,
+      });
     }
 
     const socket = getSocket();
@@ -413,13 +625,18 @@ export const useOnlineStore = create<OnlineStore>((set, get) => ({
         },
         (res) => {
           if (!res.success) {
+            // Rejection: roll back optimistic update cleanly
             const err = res.error || 'Move was rejected by server.';
-            set({ errorMessage: err });
+            set({
+              gameState: backupGameState,
+              selectedCard: backupSelectedCard,
+              validTargets: backupTargets,
+              errorMessage: err,
+            });
             resolve({ success: false, error: err });
             return;
           }
 
-          set({ selectedCard: null, validTargets: [], errorMessage: null });
           resolve({ success: true });
         }
       );
@@ -457,6 +674,7 @@ export const useOnlineStore = create<OnlineStore>((set, get) => ({
   },
 
   async rejoinCurrentRoom(): Promise<boolean> {
+    if (isRejoining) return false;
     const { room, playerId, reconnectToken } = get();
     if (!room) return false;
 
@@ -464,17 +682,39 @@ export const useOnlineStore = create<OnlineStore>((set, get) => ({
     const token = reconnectToken || playerId;
     if (!token) return false;
 
+    isRejoining = true;
     return new Promise((resolve) => {
       socket.emit('rejoin', { roomCode: room.roomCode, reconnectToken: token }, (res) => {
+        isRejoining = false;
         if (res.success && res.room) {
+          let mergedGameState = get().gameState;
+          let version = get().stateVersion;
+          if (res.gameState) {
+            const currentHand = get().gameState?.hand ?? [];
+            const stableHand = mergeHandPreservingOrder(currentHand, res.gameState.hand);
+            mergedGameState = {
+              ...res.gameState,
+              hand: stableHand,
+            };
+            version = res.gameState.version ?? version;
+          }
           set({
             status: 'connected',
             room: res.room,
-            gameState: res.gameState ?? get().gameState,
+            gameState: mergedGameState,
+            stateVersion: version,
             errorMessage: null,
           });
           resolve(true);
         } else {
+          // If room doesn't exist anymore on server (e.g. server restart/spin-down)
+          if (res.error?.includes('does not exist')) {
+            storage.removeItem(LAST_ACTIVE_ROOM_KEY);
+            clearPlayerRoomSession(room.roomCode);
+            set({
+              errorMessage: 'Match has ended or server restarted.',
+            });
+          }
           resolve(false);
         }
       });
@@ -487,6 +727,7 @@ export const useOnlineStore = create<OnlineStore>((set, get) => ({
       const socket = getSocket();
       socket.emit('leaveRoom', { roomCode: room.roomCode, playerId }, () => {});
       await clearPlayerRoomSession(room.roomCode);
+      await storage.removeItem(LAST_ACTIVE_ROOM_KEY);
     }
     get().resetOnlineState();
   },
@@ -498,9 +739,12 @@ export const useOnlineStore = create<OnlineStore>((set, get) => ({
       playerId: null,
       reconnectToken: null,
       gameState: null,
+      stateVersion: 0,
       selectedCard: null,
       validTargets: [],
       errorMessage: null,
+      notificationMessage: null,
     });
   },
+
 }));

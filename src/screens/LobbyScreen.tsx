@@ -14,9 +14,10 @@ import {
   Animated,
   Easing,
   Alert,
+  BackHandler,
 } from 'react-native';
 import * as Haptics from 'expo-haptics';
-import { ScreenBackground, GlassPanel, PrimaryButton } from '../components';
+import { ScreenBackground, GlassPanel, PrimaryButton, ScreenHeader } from '../components';
 import { palette, radius, spacing, typography } from '../theme';
 import { ScreenProps } from './types';
 import { useOnlineStore } from '../store/onlineStore';
@@ -145,13 +146,34 @@ export const LobbyScreen: React.FC<ScreenProps<'Lobby'>> = ({ navigation }) => {
     }
   };
 
+  const isLeavingRef = useRef(false);
+
   const handleLeave = async () => {
+    if (isLeavingRef.current) return;
     try {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     } catch {}
+    isLeavingRef.current = true;
     await leaveRoom();
     navigation.navigate('Home');
   };
+
+  useEffect(() => {
+    const onBackPress = () => {
+      handleLeave();
+      return true;
+    };
+    const sub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+    const unsub = navigation.addListener('beforeRemove', (e) => {
+      if (isLeavingRef.current) return;
+      e.preventDefault();
+      handleLeave();
+    });
+    return () => {
+      sub.remove();
+      unsub();
+    };
+  }, [navigation]);
 
   const getTeamColor = (t: string) => {
     if (t === 'red') return palette.red;
@@ -165,39 +187,37 @@ export const LobbyScreen: React.FC<ScreenProps<'Lobby'>> = ({ navigation }) => {
         contentContainerStyle={styles.scrollContainer}
         showsVerticalScrollIndicator={false}
       >
-        {/* Header with Connection & Leave */}
-        <View style={styles.header}>
-          <TouchableOpacity
-            activeOpacity={0.8}
-            onPress={handleLeave}
-            style={styles.backBtn}
-          >
-            <Text style={styles.backBtnText}>← Leave</Text>
-          </TouchableOpacity>
-
-          <View style={styles.connectionStatus}>
-            <View
-              style={[
-                styles.statusDot,
-                {
-                  backgroundColor:
-                    status === 'connected'
-                      ? '#22C55E'
-                      : status === 'connecting'
-                      ? '#F59E0B'
-                      : '#EF4444',
-                },
-              ]}
-            />
-            <Text style={styles.statusLabel}>
-              {status === 'connected'
-                ? 'Online'
-                : status === 'connecting'
-                ? 'Reconnecting...'
-                : 'Offline'}
-            </Text>
-          </View>
-        </View>
+        {/* Header with Connection Status & Back Button */}
+        <ScreenHeader
+          title="MATCH LOBBY"
+          subtitle={isHost ? 'Host controls & player roster' : 'Waiting for host to start'}
+          onBack={handleLeave}
+          backLabel="‹ Leave"
+          rightAction={
+            <View style={styles.connectionStatus}>
+              <View
+                style={[
+                  styles.statusDot,
+                  {
+                    backgroundColor:
+                      status === 'connected'
+                        ? '#22C55E'
+                        : status === 'connecting'
+                        ? '#F59E0B'
+                        : '#EF4444',
+                  },
+                ]}
+              />
+              <Text style={styles.statusLabel}>
+                {status === 'connected'
+                  ? 'Online'
+                  : status === 'connecting'
+                  ? 'Connecting...'
+                  : 'Offline'}
+              </Text>
+            </View>
+          }
+        />
 
         {/* Room Code Showcase */}
         <View style={styles.roomCodeCard}>
@@ -417,6 +437,17 @@ export const LobbyScreen: React.FC<ScreenProps<'Lobby'>> = ({ navigation }) => {
             <View style={styles.radarCenter}>
               <Text style={styles.radarCenterIcon}>♠</Text>
             </View>
+          </View>
+
+          {/* Explicit Leave Room Button */}
+          <View style={styles.leaveRoomWrapper}>
+            <PrimaryButton
+              title="Leave Room"
+              variant="outline"
+              style={styles.leaveRoomButton}
+              textStyle={styles.leaveRoomButtonText}
+              onPress={handleLeave}
+            />
           </View>
         </View>
       </ScrollView>
@@ -794,5 +825,16 @@ const styles = StyleSheet.create({
   radarCenterIcon: {
     fontSize: 14,
     color: palette.gold,
+  },
+  leaveRoomWrapper: {
+    width: '100%',
+    marginTop: spacing.md,
+  },
+  leaveRoomButton: {
+    borderColor: 'rgba(239, 68, 68, 0.4)',
+    backgroundColor: 'rgba(239, 68, 68, 0.08)',
+  },
+  leaveRoomButtonText: {
+    color: '#FCA5A5',
   },
 });
