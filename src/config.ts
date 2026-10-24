@@ -10,7 +10,7 @@ export const SERVER_ENDPOINTS = {
   // Local development URL (LAN IP for testing on physical phone / Expo Go)
   development: process.env.EXPO_PUBLIC_LOCAL_SERVER_URL || 'http://192.168.29.101:3001',
   // Production server URL (e.g. Render / Railway Web Service)
-  production: process.env.EXPO_PUBLIC_PROD_SERVER_URL || 'https://sequence-server.onrender.com',
+  production: process.env.EXPO_PUBLIC_PROD_SERVER_URL || 'https://sequence-d5c1.onrender.com',
 };
 
 // ── Active Environment Resolution ───────────────────────────────────────────
